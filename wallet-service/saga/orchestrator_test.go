@@ -17,12 +17,80 @@ import (
 
 // ---------- fakes ----------
 
+// fakeRail behaves like the real fake-rail: it remembers each payment's outcome.
 type fakeRail struct {
-	err   error
-	calls int
+	mu        sync.Mutex
+	err       error  // error to return on failing calls
+	failTimes int    // 0 with err set = fail forever; N = fail the next N calls
+	failState string // what a failing call really did: "" (nothing), "PAID" or "REJECTED"
+	calls     int
+	states    map[string]string
 }
 
-func (r *fakeRail) Pay(context.Context, PayRequest) error { r.calls++; return r.err }
+func (r *fakeRail) Pay(_ context.Context, req PayRequest) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	if r.states == nil {
+		r.states = map[string]string{}
+	}
+	if st, seen := r.states[req.SagaID]; seen { // repeat: stored outcome
+		if st == "PAID" {
+			return nil
+		}
+		return &RailError{Status: 422, Body: st}
+	}
+	if r.err != nil && r.failTimes >= 0 {
+		if r.failTimes > 0 {
+			r.failTimes--
+			if r.failTimes == 0 {
+				r.failTimes = -1 // used up
+			}
+		}
+		if r.failState != "" {
+			r.states[req.SagaID] = r.failState
+		}
+		return r.err
+	}
+	r.states[req.SagaID] = "PAID"
+	return nil
+}
+
+func (r *fakeRail) Status(_ context.Context, ref string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.states[ref]; ok {
+		return st, nil
+	}
+	return RailStateNone, nil
+}
+
+func (r *fakeRail) heal() { r.mu.Lock(); r.err = nil; r.mu.Unlock() }
+
+// fakeQueue records stuck notifications.
+type fakeQueue struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (q *fakeQueue) Stuck(_ context.Context, sg *Saga) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.ids = append(q.ids, sg.ID)
+	return nil
+}
+
+func (q *fakeQueue) count(id string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := 0
+	for _, x := range q.ids {
+		if x == id {
+			n++
+		}
+	}
+	return n
+}
 
 // flakyWallets wraps the real ledger and fails chosen calls.
 type flakyWallets struct {
@@ -55,6 +123,7 @@ type env struct {
 	rail    *fakeRail
 	orch    *Orchestrator
 	store   *Store
+	queue   *fakeQueue
 }
 
 func newEnv(t *testing.T) *env {
@@ -63,8 +132,12 @@ func newEnv(t *testing.T) *env {
 	w := &flakyWallets{Service: led, failCreditsTo: map[string]int{}, creditCalls: map[string]int{}}
 	rail := &fakeRail{}
 	store := NewStore(pool)
-	cfg := Config{Retries: 3, Backoff: time.Millisecond, RunLimit: 10 * time.Second}
-	return &env{led, w, rail, NewOrchestrator(store, w, rail, cfg), store}
+	cfg := Config{Policy: PolicyRefund, Retries: 3, Backoff: time.Millisecond,
+		RailRetries: 3, RailBackoff: time.Millisecond, RunLimit: 10 * time.Second}
+	orch := NewOrchestrator(store, w, rail, cfg)
+	q := &fakeQueue{}
+	orch.SetNotifier(q)
+	return &env{led, w, rail, orch, store, q}
 }
 
 func (e *env) wallet(t *testing.T, balance int64) string {
@@ -266,7 +339,9 @@ func TestResumeAfterCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Row still says DEBIT_SENDER: the crash hit before the row was updated.
-	if _, err := e.orch.ResumeRunning(ctx); err != nil {
+	// (Run on this one saga = what ResumeRunning does for every RUNNING saga at startup;
+	// calling ResumeRunning here would also grab other test packages' sagas.)
+	if err := e.orch.Run(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	sg, _ := e.orch.Get(ctx, id)

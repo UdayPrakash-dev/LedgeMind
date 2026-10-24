@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,26 +21,73 @@ type Wallets interface {
 	Debit(ctx context.Context, walletID string, amount int64, key string) (*domain.Wallet, bool, error)
 }
 
+// Notifier is told about every saga that becomes STUCK (the stuck-sagas queue).
+type Notifier interface {
+	Stuck(ctx context.Context, sg *Saga) error
+}
+
 type Config struct {
-	Retries  int           // extra attempts for debit, credit and refund (plan: 3)
-	Backoff  time.Duration // wait before retry n is Backoff * 2^(n-1)
-	RunLimit time.Duration // max time one saga run may take
+	Policy      string        // default policy for new transfers: refund, retry or escalate
+	Retries     int           // extra attempts for debit, credit and refund (3)
+	Backoff     time.Duration // wait before retry n of a wallet step: Backoff * 2^(n-1)
+	RailRetries int           // retry policy: extra rail attempts (3)
+	RailBackoff time.Duration // retry policy: 1s -> waits 1s, 2s, 4s
+	RunLimit    time.Duration // max time one saga run may take
 }
 
 func DefaultConfig() Config {
-	return Config{Retries: 3, Backoff: 100 * time.Millisecond, RunLimit: 30 * time.Second}
+	return Config{
+		Policy: PolicyRefund, Retries: 3, Backoff: 100 * time.Millisecond,
+		RailRetries: 3, RailBackoff: time.Second, RunLimit: 60 * time.Second,
+	}
 }
 
 type Orchestrator struct {
-	store   *Store
-	wallets Wallets
-	rail    PaymentRail
-	cfg     Config
+	store    *Store
+	wallets  Wallets
+	rail     PaymentRail
+	notifier Notifier // may be nil
+
+	mu  sync.RWMutex
+	cfg Config
 }
 
 func NewOrchestrator(store *Store, wallets Wallets, rail PaymentRail, cfg Config) *Orchestrator {
+	if !ValidPolicy(cfg.Policy) {
+		cfg.Policy = PolicyRefund
+	}
 	return &Orchestrator{store: store, wallets: wallets, rail: rail, cfg: cfg}
 }
+
+func (o *Orchestrator) SetNotifier(n Notifier) { o.notifier = n }
+
+// Policy / SetPolicy change the policy used by NEW transfers (the benchmark switches it per run).
+func (o *Orchestrator) Policy() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.cfg.Policy
+}
+
+func (o *Orchestrator) SetPolicy(p string) error {
+	if !ValidPolicy(p) {
+		return fmt.Errorf("%w: unknown policy %q (use refund, retry or escalate)", ErrInvalidAction, p)
+	}
+	o.mu.Lock()
+	o.cfg.Policy = p
+	o.mu.Unlock()
+	return nil
+}
+
+func (o *Orchestrator) config() Config {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.cfg
+}
+
+// Rail exposes the rail for status checks (may not implement RailStatus).
+func (o *Orchestrator) Rail() PaymentRail { return o.rail }
+
+func (o *Orchestrator) Store() *Store { return o.store }
 
 type TransferRequest struct {
 	From, To string
@@ -47,8 +95,8 @@ type TransferRequest struct {
 	Key      string
 }
 
-// Start creates a transfer and runs it to the end. A repeated key returns the
-// existing transfer (created=false) without moving money again.
+// Start creates a transfer and runs it until it finishes or gets stuck. A repeated
+// key returns the existing transfer (created=false) without moving money again.
 func (o *Orchestrator) Start(ctx context.Context, req TransferRequest) (*Saga, bool, error) {
 	req.Key = strings.TrimSpace(req.Key)
 	switch {
@@ -72,7 +120,7 @@ func (o *Orchestrator) Start(ctx context.Context, req TransferRequest) (*Saga, b
 	sg, created, err := o.store.Create(ctx, &Saga{
 		ID: id.String(), IdempotencyKey: req.Key,
 		FromWallet: req.From, ToWallet: req.To, Amount: req.Amount,
-		CurrentStep: StepDebitSender, Status: StatusRunning,
+		CurrentStep: StepDebitSender, Status: StatusRunning, Policy: o.Policy(),
 	})
 	if err != nil {
 		return nil, false, err
@@ -84,10 +132,7 @@ func (o *Orchestrator) Start(ctx context.Context, req TransferRequest) (*Saga, b
 		return sg, false, nil
 	}
 
-	// Keep running even if the HTTP client disconnects: a half-finished saga is worse.
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.cfg.RunLimit)
-	defer cancel()
-	if err := o.Run(runCtx, sg.ID); err != nil {
+	if err := o.runDetached(ctx, sg.ID, ""); err != nil {
 		log.Printf("saga %s: run error: %v", sg.ID, err)
 	}
 	sg, err = o.store.Get(ctx, sg.ID)
@@ -98,9 +143,19 @@ func (o *Orchestrator) Get(ctx context.Context, id string) (*Saga, error) {
 	return o.store.Get(ctx, id)
 }
 
+// runDetached keeps running even if the HTTP client disconnects: a half-finished saga is worse.
+func (o *Orchestrator) runDetached(ctx context.Context, id, policyOverride string) error {
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.config().RunLimit)
+	defer cancel()
+	return o.run(runCtx, id, policyOverride)
+}
+
 // Run drives a saga from its current step until it is finished or stuck.
 // Every step is idempotent, so Run can safely be called again after a crash.
-func (o *Orchestrator) Run(ctx context.Context, id string) error {
+func (o *Orchestrator) Run(ctx context.Context, id string) error { return o.run(ctx, id, "") }
+
+func (o *Orchestrator) run(ctx context.Context, id, policyOverride string) error {
+	cfg := o.config()
 	for {
 		sg, err := o.store.Get(ctx, id)
 		if err != nil {
@@ -109,14 +164,17 @@ func (o *Orchestrator) Run(ctx context.Context, id string) error {
 		if sg.Status != StatusRunning {
 			return nil
 		}
+		policy := sg.Policy
+		if policyOverride != "" {
+			policy = policyOverride
+		}
 
 		var step, status string
 		var entries []HistoryEntry
 
 		switch sg.CurrentStep {
 		case StepDebitSender:
-			var err error
-			entries, err = o.attempt(ctx, StepDebitSender, func() error {
+			entries, err = o.attempt(ctx, StepDebitSender, cfg.Retries, cfg.Backoff, func() error {
 				_, _, err := o.wallets.Debit(ctx, sg.FromWallet, sg.Amount, debitKey(sg.ID))
 				return err
 			})
@@ -130,30 +188,38 @@ func (o *Orchestrator) Run(ctx context.Context, id string) error {
 			}
 
 		case StepCallRail:
-			// No retries here: the fixed rule is "rail failed -> refund".
-			err := o.rail.Pay(ctx, PayRequest{SagaID: sg.ID, From: sg.FromWallet, To: sg.ToWallet, Amount: sg.Amount})
-			entries = []HistoryEntry{entry(StepCallRail, 1, err)}
-			if err == nil {
+			retries := 0
+			if policy == PolicyRetry {
+				retries = cfg.RailRetries
+			}
+			entries, err = o.attempt(ctx, StepCallRail, retries, cfg.RailBackoff, func() error {
+				return o.rail.Pay(ctx, PayRequest{SagaID: sg.ID, From: sg.FromWallet, To: sg.ToWallet, Amount: sg.Amount})
+			})
+			switch {
+			case err == nil:
 				step, status = StepCreditReceiver, StatusRunning
-			} else {
+			case policy == PolicyRefund:
 				step, status = StepRefundSender, StatusRunning
+			default: // retry gave up, or escalate
+				step, status = StepCallRail, StatusStuck
 			}
 
 		case StepCreditReceiver:
-			var err error
-			entries, err = o.attempt(ctx, StepCreditReceiver, func() error {
+			entries, err = o.attempt(ctx, StepCreditReceiver, cfg.Retries, cfg.Backoff, func() error {
 				_, _, err := o.wallets.Credit(ctx, sg.ToWallet, sg.Amount, creditKey(sg.ID))
 				return err
 			})
-			if err == nil {
+			switch {
+			case err == nil:
 				step, status = StepDone, StatusCompleted
-			} else {
+			case policy == PolicyRefund:
 				step, status = StepRefundSender, StatusRunning
+			default:
+				step, status = StepCreditReceiver, StatusStuck
 			}
 
 		case StepRefundSender:
-			var err error
-			entries, err = o.attempt(ctx, StepRefundSender, func() error {
+			entries, err = o.attempt(ctx, StepRefundSender, cfg.Retries, cfg.Backoff, func() error {
 				_, _, err := o.wallets.Credit(ctx, sg.FromWallet, sg.Amount, refundKey(sg.ID))
 				return err
 			})
@@ -164,26 +230,45 @@ func (o *Orchestrator) Run(ctx context.Context, id string) error {
 			}
 
 		default:
-			return o.store.Advance(ctx, sg.ID, sg.CurrentStep, StatusStuck,
-				entry(sg.CurrentStep, 1, fmt.Errorf("unknown step %q", sg.CurrentStep)))
+			step, status = sg.CurrentStep, StatusStuck
+			entries = []HistoryEntry{entry(sg.CurrentStep, 1, fmt.Errorf("unknown step %q", sg.CurrentStep))}
 		}
 
-		if err := o.store.Advance(ctx, sg.ID, step, status, entries...); err != nil {
+		if err := o.advance(ctx, sg.ID, step, status, entries...); err != nil {
 			return err
 		}
 	}
 }
 
-// attempt runs fn once plus up to cfg.Retries retries. Permanent errors are not retried.
-func (o *Orchestrator) attempt(ctx context.Context, step string, fn func() error) ([]HistoryEntry, error) {
+// advance saves the transition and, if the saga became STUCK, notifies the queue.
+func (o *Orchestrator) advance(ctx context.Context, id, step, status string, entries ...HistoryEntry) error {
+	if err := o.store.Advance(ctx, id, step, status, entries...); err != nil {
+		return err
+	}
+	if status == StatusStuck && o.notifier != nil {
+		sg, err := o.store.Get(ctx, id)
+		if err == nil {
+			err = o.notifier.Stuck(ctx, sg)
+		}
+		if err != nil {
+			// The saga is still STUCK in Postgres; GET /transfers?status=STUCK finds it.
+			log.Printf("saga %s: stuck notification failed: %v", id, err)
+		}
+	}
+	return nil
+}
+
+// attempt runs fn once plus up to `retries` retries, waiting backoff * 2^(n-1)
+// before retry n. Permanent errors are not retried.
+func (o *Orchestrator) attempt(ctx context.Context, step string, retries int, backoff time.Duration, fn func() error) ([]HistoryEntry, error) {
 	var entries []HistoryEntry
 	var err error
-	for n := 1; n <= 1+o.cfg.Retries; n++ {
+	for n := 1; n <= 1+retries; n++ {
 		if n > 1 {
 			select {
 			case <-ctx.Done():
 				return append(entries, entry(step, n, ctx.Err())), ctx.Err()
-			case <-time.After(o.cfg.Backoff * time.Duration(1<<(n-2))):
+			case <-time.After(backoff * time.Duration(1<<(n-2))):
 			}
 		}
 		err = fn()
@@ -213,7 +298,7 @@ func entry(step string, attempt int, err error) HistoryEntry {
 
 // ResumeRunning finishes sagas left RUNNING by a crash or restart.
 func (o *Orchestrator) ResumeRunning(ctx context.Context) (int, error) {
-	sagas, err := o.store.ListByStatus(ctx, StatusRunning, 1000)
+	sagas, err := o.store.List(ctx, StatusRunning, time.Time{}, 1000)
 	if err != nil {
 		return 0, err
 	}

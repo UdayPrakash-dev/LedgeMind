@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ledgemind/wallet-service/audit"
 	"ledgemind/wallet-service/eventstore"
 	"ledgemind/wallet-service/internal/testdb"
 	"ledgemind/wallet-service/ledger"
@@ -23,7 +25,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	led := ledger.NewService(eventstore.New(pool), nil, 0)
 	cfg := saga.Config{Retries: 3, Backoff: time.Millisecond, RunLimit: 10 * time.Second}
 	orch := saga.NewOrchestrator(saga.NewStore(pool), led, saga.AlwaysOKRail{}, cfg)
-	srv := httptest.NewServer(NewServer(led, orch, nil))
+	srv := httptest.NewServer(NewServer(led, orch, audit.New(pool, saga.NewStore(pool), led, saga.AlwaysOKRail{}), nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -234,4 +236,106 @@ func TestTransferEndToEnd(t *testing.T) {
 	expect(t, call(t, srv, "POST", "/transfers", "", body), 400, "missing key")
 	expect(t, call(t, srv, "POST", "/transfers", k("tx-4"), `{"from_wallet":"nope","to_wallet":"nope2","amount_paise":5}`), 404, "bad wallet ids")
 	expect(t, call(t, srv, "GET", "/transfers/01928c4e-0000-7000-8000-000000000000", "", ""), 404, "missing transfer")
+}
+
+// toggleRail fails while broken is true, and remembers outcomes like the real rail.
+type toggleRail struct {
+	mu     sync.Mutex
+	broken bool
+	states map[string]string
+}
+
+func (r *toggleRail) Pay(_ context.Context, req saga.PayRequest) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.broken {
+		return &saga.RailError{Status: 503, Body: "rail down"} // transient: nothing recorded
+	}
+	r.states[req.SagaID] = "PAID"
+	return nil
+}
+
+func (r *toggleRail) Status(_ context.Context, ref string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.states[ref]; ok {
+		return st, nil
+	}
+	return saga.RailStateNone, nil
+}
+
+func TestRecoveryEndpoints(t *testing.T) {
+	pool := testdb.New(t)
+	led := ledger.NewService(eventstore.New(pool), nil, 0)
+	rail := &toggleRail{broken: true, states: map[string]string{}}
+	store := saga.NewStore(pool)
+	cfg := saga.Config{Policy: saga.PolicyRefund, Retries: 1, Backoff: time.Millisecond,
+		RailRetries: 1, RailBackoff: time.Millisecond, RunLimit: 10 * time.Second}
+	orch := saga.NewOrchestrator(store, led, rail, cfg)
+	srv := httptest.NewServer(NewServer(led, orch, audit.New(pool, store, led, rail), nil))
+	defer srv.Close()
+
+	// Switch new transfers to "escalate"
+	expect(t, call(t, srv, "POST", "/admin/policy", "", `{"policy":"escalate"}`), 200, "set policy")
+	expect(t, call(t, srv, "POST", "/admin/policy", "", `{"policy":"nope"}`), 400, "bad policy")
+	if r := call(t, srv, "GET", "/admin/policy", "", ""); r.Body["policy"] != "escalate" {
+		t.Fatalf("policy = %v", r.Body)
+	}
+
+	a := call(t, srv, "POST", "/wallets", "", `{"owner":"a"}`).Body["id"].(string)
+	b := call(t, srv, "POST", "/wallets", "", `{"owner":"b"}`).Body["id"].(string)
+	call(t, srv, "POST", "/wallets/"+a+"/credit", "seed", `{"amount_paise":5000}`)
+
+	r := call(t, srv, "POST", "/transfers", "stuck-"+a, fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":1000}`, a, b))
+	expect(t, r, 201, "transfer")
+	if r.Body["status"] != "STUCK" || r.Body["policy"] != "escalate" {
+		t.Fatalf("transfer: %v", r.Body)
+	}
+	id := r.Body["id"].(string)
+
+	// Tools: ledger state and rail state
+	if m := call(t, srv, "GET", "/transfers/"+id+"/money", "", ""); m.Body["debited"] != true || m.Body["credited"] != false {
+		t.Fatalf("money: %v", m.Body)
+	}
+	expect(t, call(t, srv, "GET", "/transfers/"+id+"/rail", "", ""), 200, "rail status")
+
+	// It shows up in the STUCK list
+	req, _ := http.NewRequest("GET", srv.URL+"/transfers?status=STUCK&limit=500", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	found := false
+	for _, s := range list {
+		if s["id"] == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("stuck transfer missing from GET /transfers?status=STUCK")
+	}
+
+	// Executor: bad action, then retry after the rail heals
+	expect(t, call(t, srv, "POST", "/transfers/"+id+"/actions", "", `{"action":"explode"}`), 400, "bad action")
+	rail.mu.Lock()
+	rail.broken = false
+	rail.mu.Unlock()
+	r = call(t, srv, "POST", "/transfers/"+id+"/actions", "", `{"action":"retry_step","actor":"test","reason":"rail is back"}`)
+	expect(t, r, 200, "retry_step")
+	if r.Body["status"] != "COMPLETED" {
+		t.Fatalf("after retry: %v", r.Body)
+	}
+	expect(t, call(t, srv, "POST", "/transfers/"+id+"/actions", "", `{"action":"compensate"}`), 409, "action on finished transfer")
+
+	// Invariants for this transfer are clean
+	inv := call(t, srv, "GET", "/admin/invariants?saga_id="+id, "", "")
+	expect(t, inv, 200, "invariants")
+	if inv.Body["ok"] != true {
+		t.Fatalf("invariants: %v", inv.Body)
+	}
+	expect(t, call(t, srv, "GET", "/admin/invariants?since=yesterday", "", ""), 400, "bad since")
+	expect(t, call(t, srv, "POST", "/admin/reconcile", "", ""), 200, "reconcile")
 }

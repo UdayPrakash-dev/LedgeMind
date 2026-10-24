@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
-// PayRequest is what we send to the external payment rail.
-// SagaID doubles as the rail's idempotency key.
+// PayRequest is what we send to the external payment rail. SagaID is the
+// rail's idempotency key: the saga id, or "<id>:reroute:N" for a reroute.
 type PayRequest struct {
 	SagaID string `json:"saga_id"`
 	From   string `json:"from_wallet"`
@@ -19,10 +20,18 @@ type PayRequest struct {
 	Amount int64  `json:"amount_paise"`
 }
 
-// PaymentRail is the external service in step 2 (built for real on Day 4).
+// PaymentRail is the external service in step 2.
 type PaymentRail interface {
 	Pay(ctx context.Context, req PayRequest) error
 }
+
+// RailStatus asks the rail what really happened to a payment.
+// Returns PAID, REJECTED, REVERSED or NONE (never seen).
+type RailStatus interface {
+	Status(ctx context.Context, ref string) (string, error)
+}
+
+const RailStateNone = "NONE"
 
 // RailError is a failure reported by the rail.
 type RailError struct {
@@ -39,7 +48,9 @@ type AlwaysOKRail struct{}
 
 func (AlwaysOKRail) Pay(context.Context, PayRequest) error { return nil }
 
-// HTTPRail calls POST {BaseURL}/pay.
+func (AlwaysOKRail) Status(context.Context, string) (string, error) { return "PAID", nil }
+
+// HTTPRail calls the fake-rail service.
 type HTTPRail struct {
 	BaseURL string
 	Client  *http.Client
@@ -70,4 +81,29 @@ func (r *HTTPRail) Pay(ctx context.Context, req PayRequest) error {
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	return &RailError{Status: resp.StatusCode, Body: string(bytes.TrimSpace(msg))}
+}
+
+func (r *HTTPRail) Status(ctx context.Context, ref string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.BaseURL+"/payments/"+url.PathEscape(ref), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := r.Client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("payment rail unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return RailStateNone, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", &RailError{Status: resp.StatusCode}
+	}
+	var p struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return "", err
+	}
+	return p.State, nil
 }

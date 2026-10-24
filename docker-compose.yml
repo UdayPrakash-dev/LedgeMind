@@ -55,6 +55,7 @@ services:
       REDIS_ADDR: redis:6379
       SNAPSHOT_EVERY: "50"
       RAIL_URL: "${RAIL_URL:-http://fake-rail:9000}"   # the fake payment rail below
+      RECOVERY_POLICY: "${RECOVERY_POLICY:-refund}"     # refund | retry | escalate (changeable at runtime)
       PORT: "8080"
     ports:
       - "8080:8080"

@@ -15,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledgemind/wallet-service/api"
+	"ledgemind/wallet-service/audit"
 	"ledgemind/wallet-service/eventstore"
 	"ledgemind/wallet-service/ledger"
 	"ledgemind/wallet-service/migrations"
 	"ledgemind/wallet-service/saga"
 	"ledgemind/wallet-service/snapshot"
+	"ledgemind/wallet-service/stuckqueue"
 )
 
 func main() {
@@ -60,7 +62,27 @@ func main() {
 	} else {
 		log.Printf("payment rail: none configured, every payment succeeds")
 	}
-	orch := saga.NewOrchestrator(saga.NewStore(pool), svc, rail, saga.DefaultConfig())
+	cfg := saga.DefaultConfig()
+	cfg.Policy = getenv("RECOVERY_POLICY", saga.PolicyRefund) // refund | retry | escalate
+	if ms, err := strconv.Atoi(os.Getenv("RAIL_RETRY_BACKOFF_MS")); err == nil && ms > 0 {
+		cfg.RailBackoff = time.Duration(ms) * time.Millisecond
+	}
+	store := saga.NewStore(pool)
+	orch := saga.NewOrchestrator(store, svc, rail, cfg)
+	log.Printf("recovery policy for new transfers: %s", orch.Policy())
+
+	// Every STUCK saga goes to the Redis Stream "stuck-sagas" for the recovery service.
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		q := stuckqueue.New(addr, getenv("STUCK_STREAM", stuckqueue.DefaultStream))
+		defer q.Close()
+		orch.SetNotifier(q)
+	}
+
+	var railStatus saga.RailStatus
+	if rs, ok := rail.(saga.RailStatus); ok {
+		railStatus = rs
+	}
+	auditor := audit.New(pool, store, svc, railStatus)
 
 	// Finish transfers that were mid-way when the service last stopped.
 	if n, err := orch.ResumeRunning(ctx); err != nil {
@@ -79,7 +101,7 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"service": "wallet", "status": status})
 	}
 
-	handler := logRequests(api.NewServer(svc, orch, health))
+	handler := logRequests(api.NewServer(svc, orch, auditor, health))
 
 	srv := &http.Server{Addr: ":" + port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

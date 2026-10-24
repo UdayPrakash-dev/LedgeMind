@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,17 +18,20 @@ type Store struct {
 
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
-const columns = `saga_id, idempotency_key, from_wallet, to_wallet, amount, current_step, status, history, created_at, updated_at`
+const columns = `saga_id, idempotency_key, from_wallet, to_wallet, amount, current_step, status, policy, history, created_at, updated_at`
 
 // Create inserts a new saga. If the idempotency key already exists, it returns
 // the existing saga with created=false instead.
 func (s *Store) Create(ctx context.Context, sg *Saga) (*Saga, bool, error) {
+	if sg.Policy == "" {
+		sg.Policy = PolicyRefund
+	}
 	row := s.db.QueryRow(ctx, `
-		INSERT INTO sagas (saga_id, idempotency_key, from_wallet, to_wallet, amount, current_step, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO sagas (saga_id, idempotency_key, from_wallet, to_wallet, amount, current_step, status, policy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+columns,
-		sg.ID, sg.IdempotencyKey, sg.FromWallet, sg.ToWallet, sg.Amount, sg.CurrentStep, sg.Status)
+		sg.ID, sg.IdempotencyKey, sg.FromWallet, sg.ToWallet, sg.Amount, sg.CurrentStep, sg.Status, sg.Policy)
 	created, err := scan(row)
 	if err == nil {
 		return created, true, nil
@@ -70,9 +74,33 @@ func (s *Store) Advance(ctx context.Context, id, step, status string, entries ..
 	return nil
 }
 
-// ListByStatus returns sagas with a given status, oldest first.
-func (s *Store) ListByStatus(ctx context.Context, status string, limit int) ([]*Saga, error) {
-	rows, err := s.db.Query(ctx, `SELECT `+columns+` FROM sagas WHERE status = $1 ORDER BY created_at LIMIT $2`, status, limit)
+// Claim atomically switches a saga from one of the given statuses to RUNNING
+// (optionally changing its step). Only one caller can win; the rest get ErrNotActionable.
+func (s *Store) Claim(ctx context.Context, id string, step string, from ...string) (*Saga, error) {
+	row := s.db.QueryRow(ctx, `
+		UPDATE sagas
+		   SET status = 'RUNNING', current_step = COALESCE(NULLIF($2, ''), current_step), updated_at = now()
+		 WHERE saga_id = $1 AND status = ANY($3)
+		RETURNING `+columns, id, step, from)
+	sg, err := scan(row)
+	if errors.Is(err, ErrNotFound) {
+		if _, getErr := s.Get(ctx, id); errors.Is(getErr, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, ErrNotActionable
+	}
+	return sg, err
+}
+
+// List returns sagas, newest first. status "" = any; since zero = no time filter.
+func (s *Store) List(ctx context.Context, status string, since time.Time, limit int) ([]*Saga, error) {
+	if limit <= 0 || limit > 10_000 {
+		limit = 10_000
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT `+columns+` FROM sagas
+		 WHERE ($1 = '' OR status = $1) AND created_at >= $2
+		 ORDER BY created_at DESC LIMIT $3`, status, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +120,7 @@ func scan(row pgx.Row) (*Saga, error) {
 	var sg Saga
 	var history []byte
 	err := row.Scan(&sg.ID, &sg.IdempotencyKey, &sg.FromWallet, &sg.ToWallet, &sg.Amount,
-		&sg.CurrentStep, &sg.Status, &history, &sg.CreatedAt, &sg.UpdatedAt)
+		&sg.CurrentStep, &sg.Status, &sg.Policy, &history, &sg.CreatedAt, &sg.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

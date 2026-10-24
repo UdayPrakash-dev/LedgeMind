@@ -11,7 +11,9 @@ wallet-service/        Go: event store, wallets, snapshots, transfer sagas
   eventstore/          append-only event store with optimistic concurrency
   domain/              wallet rules (pure, no I/O) + snapshots
   ledger/              load -> decide -> append loop, Redis snapshot cache
-  saga/                transfer saga: debit -> payment rail -> credit, fixed compensations
+  saga/                transfer saga, recovery policies, executor (the only way to fix a stuck transfer)
+  audit/               invariant checks: money conserved, ledger matches the rail
+  stuckqueue/          pushes STUCK transfers to the Redis Stream "stuck-sagas"
   api/                 HTTP endpoints
 recovery-service/      Python: AI planner, verifier, resolution memory (Day 6+)
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
@@ -58,7 +60,44 @@ All money is in paise (int64). Writes need an `Idempotency-Key` header.
 | `POST /transfers` | `{"from_wallet":"..","to_wallet":"..","amount_paise":1000}` | 201 new / 200 repeat; outcome in `status` |
 | `GET /transfers/{id}` | | 200 transfer with step history / 404 |
 
-Transfer statuses: `COMPLETED`, `FAILED` (debit rejected, nothing moved), `COMPENSATED` (sender refunded), `STUCK` (refund failed; needs recovery), `RUNNING`.
+Transfer statuses: `COMPLETED`, `FAILED` (debit rejected, nothing moved), `COMPENSATED` (sender refunded), `STUCK` (waiting for recovery), `ESCALATED` (handed to a human), `RUNNING`.
+
+## Recovery
+
+**Policy** (what a new transfer does when the rail fails), set with `POST /admin/policy {"policy":"..."}` or `RECOVERY_POLICY`:
+
+| Policy | Rail fails | Credit keeps failing |
+| --- | --- | --- |
+| `refund` (baseline 1) | refund sender | refund sender |
+| `retry` (baseline 2) | retry after 1s, 2s, 4s, then STUCK | STUCK |
+| `escalate` (AI strategies) | STUCK at once | STUCK |
+
+Every STUCK transfer is added to the Redis Stream `stuck-sagas` (fields: `saga_id, step, policy, error, history, amount_paise, at`).
+
+**Executor**: `POST /transfers/{id}/actions`, only for STUCK transfers:
+
+| Action | Body | Effect |
+| --- | --- | --- |
+| `retry_step` | `{"action":"retry_step"}` | run the failed step again |
+| `compensate` | `{"action":"compensate"}` | take back any receiver credit, refund the sender |
+| `reroute` | `{"action":"reroute","rail":"backup"}` | pay again under a new rail payment id (only at CALL_RAIL) |
+| `partial_refund` | `{"action":"partial_refund","amount_paise":400}` | refund part of the amount |
+| `escalate` | `{"action":"escalate","reason":"..."}` | hand to a human |
+
+Add `"actor"` and `"reason"` to any action; both are saved in the transfer's history. The executor keeps the ledger safe (no negative balances, nothing applied twice) but does not judge whether an action is wise; that is the verifier's job.
+
+**Tools for a recovery strategy**: `GET /transfers/{id}/money` (what happened in the ledger), `GET /transfers/{id}/rail` (what the rail says), `GET /transfers?status=STUCK`.
+
+**Checks**: `GET /admin/invariants` (add `?saga_id=` or `?since=2026-10-24T10:00:00Z`; `&rail=false` skips rail lookups). `POST /admin/reconcile` marks completed transfers whose rail payment was later reversed as STUCK at step `RECONCILE`.
+
+| Violation | Meaning |
+| --- | --- |
+| `rail_paid_but_refunded` | sender refunded although the rail paid: money left twice |
+| `delivered_but_rail_not_paid` | receiver credited although the rail rejected or reversed |
+| `double_rail_payment` | the rail paid more than once for one transfer |
+| `money_created` / `over_delivery` | a transfer gave back or delivered more than it took |
+| `unsettled_terminal_saga` | a finished transfer still has money in flight |
+| `negative_balance`, `snapshot_mismatch`, `conservation` | wallet-level problems |
 
 ## Fake payment rail (port 9000)
 

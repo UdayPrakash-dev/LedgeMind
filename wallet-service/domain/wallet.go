@@ -122,6 +122,12 @@ func (w *Wallet) Debit(amount int64, key string) ([]eventstore.NewEvent, error) 
 	}}, nil
 }
 
+// Op reports what an idempotency key was used for, if anything.
+func (w *Wallet) Op(key string) (Operation, bool) {
+	op, ok := w.ops[key]
+	return op, ok
+}
+
 // IsRepeat reports whether key was already used for exactly this operation.
 func (w *Wallet) IsRepeat(eventType string, amount int64, key string) bool {
 	return w.alreadyApplied(eventType, amount, key)
