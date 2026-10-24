@@ -1,4 +1,4 @@
-// Wallet service entry point. Day 1: connects to Postgres and serves /health.
+// Wallet service entry point: connects to Postgres and serves the wallet API.
 package main
 
 import (
@@ -13,7 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ledgemind/wallet-service/api"
 	"ledgemind/wallet-service/eventstore"
+	"ledgemind/wallet-service/ledger"
 )
 
 func main() {
@@ -29,10 +31,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	_ = eventstore.New(pool) // used from Day 2 onwards
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	health := func(w http.ResponseWriter, r *http.Request) {
 		status, code := "ok", http.StatusOK
 		if err := pool.Ping(r.Context()); err != nil {
 			status, code = "db unreachable", http.StatusServiceUnavailable
@@ -40,9 +39,12 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		json.NewEncoder(w).Encode(map[string]string{"service": "wallet", "status": status})
-	})
+	}
 
-	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	svc := ledger.NewService(eventstore.New(pool))
+	handler := logRequests(api.NewServer(svc, health))
+
+	srv := &http.Server{Addr: ":" + port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		log.Printf("wallet-service listening on :%s", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -55,6 +57,28 @@ func main() {
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
 	log.Println("wallet-service stopped")
+}
+
+// logRequests prints one line per request: method, path, status, duration.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		if r.URL.Path != "/health" {
+			log.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
 }
 
 // connectWithRetry waits for Postgres to accept connections (up to ~30s).
