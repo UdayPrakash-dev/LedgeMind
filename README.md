@@ -14,7 +14,7 @@ wallet-service/        Go: event store, wallets, snapshots, transfer sagas
   saga/                transfer saga: debit -> payment rail -> credit, fixed compensations
   api/                 HTTP endpoints
 recovery-service/      Python: AI planner, verifier, resolution memory (Day 6+)
-fake-rail/             fake payment service with fault injection (Day 4)
+fake-rail/             Go: fake payment rail with 5 repeatable fault modes
 bench/                 benchmark harness (Day 8)
 paper/                 LaTeX source
 ```
@@ -36,6 +36,7 @@ curl http://localhost:8080/health
 Needs Postgres and Redis from the step above.
 
 ```cmd
+cd fake-rail && go test ./... && cd ..
 cd wallet-service
 set "DATABASE_URL=postgres://ledgemind:ledgemind@localhost:5432/ledgemind?sslmode=disable"
 set "REDIS_ADDR=localhost:6379"
@@ -58,6 +59,34 @@ All money is in paise (int64). Writes need an `Idempotency-Key` header.
 | `GET /transfers/{id}` | | 200 transfer with step history / 404 |
 
 Transfer statuses: `COMPLETED`, `FAILED` (debit rejected, nothing moved), `COMPENSATED` (sender refunded), `STUCK` (refund failed; needs recovery), `RUNNING`.
+
+## Fake payment rail (port 9000)
+
+| Mode | Rail replies | What really happened | Correct recovery |
+| --- | --- | --- | --- |
+| `none` | 200 PAID | PAID | continue |
+| `reject` | 422 limit exceeded | REJECTED | refund sender |
+| `timeout` | nothing (wallet gives up after 2s) | PAID | continue, do NOT refund |
+| `duplicate` | 409 duplicate | PAID | continue, do NOT refund |
+| `partial` | 200 PAID | PAID, REVERSED 3s later | refund sender |
+| `unknown` | 500 strange error | PAID or REJECTED (hidden) | check status, then decide |
+
+Repeating a payment for the same `saga_id` never charges twice; it returns the stored outcome.
+
+How the fault for each payment is chosen (first match wins):
+1. `X-Fault-Mode` header on `POST /pay` (for testing the rail directly)
+2. Queue: `POST /admin/faults {"modes":["timeout","reject"]}`, used in order
+3. Random: `fault_rate` + `weights`, from a seeded generator (same seed and call order = same faults)
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /pay` | make a payment |
+| `GET /payments/{saga_id}` | what really happened (ground truth) |
+| `POST /admin/faults` | queue faults for the next payments |
+| `POST /admin/config` | `{"seed":42,"fault_rate":0.3,"weights":{"timeout":1,"unknown":2}}`; also resets all state |
+| `POST /admin/reset` | clear payments, logs and queue; restart the seed |
+| `GET /admin/calls?limit=50` | call log (also printed as JSON lines in `docker compose logs fake-rail`) |
+| `GET /admin/stats` | counts by mode and state |
 
 ## Useful commands
 

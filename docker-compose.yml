@@ -54,7 +54,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-ledgemind}:${POSTGRES_PASSWORD:-ledgemind}@postgres:5432/${POSTGRES_DB:-ledgemind}?sslmode=disable
       REDIS_ADDR: redis:6379
       SNAPSHOT_EVERY: "50"
-      RAIL_URL: "${RAIL_URL:-}"     # empty = every payment succeeds (fake-rail arrives Day 4)
+      RAIL_URL: "${RAIL_URL:-http://fake-rail:9000}"   # the fake payment rail below
       PORT: "8080"
     ports:
       - "8080:8080"
@@ -63,6 +63,24 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      fake-rail:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
+  # Fake payment rail (Go): fails on purpose, in 5 repeatable ways
+  # ---------------------------------------------------------------
+  fake-rail:
+    build: ./fake-rail
+    container_name: ledgemind-rail
+    environment:
+      SEED: "${RAIL_SEED:-42}"              # same seed + same call order = same faults
+      FAULT_RATE: "${RAIL_FAULT_RATE:-0}"   # 0 = no random faults (use the admin API instead)
+      TIMEOUT_DELAY_MS: "5000"              # longer than the wallet's 2s rail timeout
+      REVERSAL_DELAY_MS: "3000"             # "partial" payments get reversed after this
+      PORT: "9000"
+    ports:
+      - "9000:9000"
     restart: unless-stopped
 
   # ---------------------------------------------------------------
