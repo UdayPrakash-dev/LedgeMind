@@ -2,44 +2,28 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"ledgemind/wallet-service/eventstore"
+	"ledgemind/wallet-service/internal/testdb"
 	"ledgemind/wallet-service/ledger"
+	"ledgemind/wallet-service/saga"
 )
 
 // End-to-end tests: real HTTP handlers + real Postgres. Needs DATABASE_URL.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set; skipping end-to-end tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	schema, err := os.ReadFile("../../db/init/001_events.sql")
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
-	}
-	srv := httptest.NewServer(NewServer(ledger.NewService(eventstore.New(pool)), nil))
+	pool := testdb.New(t)
+	led := ledger.NewService(eventstore.New(pool), nil, 0)
+	cfg := saga.Config{Retries: 3, Backoff: time.Millisecond, RunLimit: 10 * time.Second}
+	orch := saga.NewOrchestrator(saga.NewStore(pool), led, saga.AlwaysOKRail{}, cfg)
+	srv := httptest.NewServer(NewServer(led, orch, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -207,4 +191,47 @@ func TestConcurrentDebitsNeverOverdraw(t *testing.T) {
 	if b := balance(call(t, srv, "GET", "/wallets/"+id, "", "")); b != 0 {
 		t.Fatalf("balance = %d, want 0", b)
 	}
+}
+
+func TestTransferEndToEnd(t *testing.T) {
+	srv := newTestServer(t)
+	a := call(t, srv, "POST", "/wallets", "", `{"owner":"alice"}`).Body["id"].(string)
+	b := call(t, srv, "POST", "/wallets", "", `{"owner":"bob"}`).Body["id"].(string)
+	expect(t, call(t, srv, "POST", "/wallets/"+a+"/credit", "seed", `{"amount_paise":50000}`), 200, "seed")
+
+	k := func(name string) string { return name + "-" + a } // transfer keys are global: keep them unique per run
+	body := fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":20000}`, a, b)
+	r := call(t, srv, "POST", "/transfers", k("tx-1"), body)
+	expect(t, r, 201, "transfer")
+	if r.Body["status"] != "COMPLETED" || r.Body["current_step"] != "DONE" {
+		t.Fatalf("transfer: %v", r.Body)
+	}
+	id := r.Body["id"].(string)
+
+	// Repeat: same transfer, no new money movement
+	r = call(t, srv, "POST", "/transfers", k("tx-1"), body)
+	expect(t, r, 200, "repeat transfer")
+	if r.Body["id"] != id || !r.Replayed {
+		t.Fatalf("repeat returned %v", r.Body)
+	}
+
+	expect(t, call(t, srv, "GET", "/transfers/"+id, "", ""), 200, "get transfer")
+	if balance(call(t, srv, "GET", "/wallets/"+a, "", "")) != 30_000 ||
+		balance(call(t, srv, "GET", "/wallets/"+b, "", "")) != 20_000 {
+		t.Fatal("wrong balances after transfer")
+	}
+
+	// Not enough money: transfer is created but FAILED, nothing moves
+	r = call(t, srv, "POST", "/transfers", k("tx-2"), fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":999999}`, a, b))
+	expect(t, r, 201, "big transfer")
+	if r.Body["status"] != "FAILED" {
+		t.Fatalf("big transfer: %v", r.Body)
+	}
+
+	// Bad requests
+	expect(t, call(t, srv, "POST", "/transfers", k("tx-1"), fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":5}`, a, b)), 409, "key reuse")
+	expect(t, call(t, srv, "POST", "/transfers", k("tx-3"), fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":5}`, a, a)), 400, "self transfer")
+	expect(t, call(t, srv, "POST", "/transfers", "", body), 400, "missing key")
+	expect(t, call(t, srv, "POST", "/transfers", k("tx-4"), `{"from_wallet":"nope","to_wallet":"nope2","amount_paise":5}`), 404, "bad wallet ids")
+	expect(t, call(t, srv, "GET", "/transfers/01928c4e-0000-7000-8000-000000000000", "", ""), 404, "missing transfer")
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -16,6 +17,9 @@ import (
 	"ledgemind/wallet-service/api"
 	"ledgemind/wallet-service/eventstore"
 	"ledgemind/wallet-service/ledger"
+	"ledgemind/wallet-service/migrations"
+	"ledgemind/wallet-service/saga"
+	"ledgemind/wallet-service/snapshot"
 )
 
 func main() {
@@ -31,6 +35,40 @@ func main() {
 	}
 	defer pool.Close()
 
+	if err := migrations.Apply(ctx, pool); err != nil {
+		log.Fatalf("migrations: %v", err)
+	}
+
+	// Redis snapshots are optional: without REDIS_ADDR every load is a full replay.
+	var snaps ledger.SnapshotStore
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rs := snapshot.NewRedisStore(addr)
+		defer rs.Close()
+		if err := rs.Ping(ctx); err != nil {
+			log.Printf("redis %s not reachable yet (%v); continuing, loads fall back to replay", addr, err)
+		}
+		snaps = rs
+	}
+	every, _ := strconv.ParseInt(getenv("SNAPSHOT_EVERY", "50"), 10, 64)
+	svc := ledger.NewService(eventstore.New(pool), snaps, every)
+
+	// Payment rail: the fake-rail service from Day 4, or "always succeeds" if unset.
+	var rail saga.PaymentRail = saga.AlwaysOKRail{}
+	if url := os.Getenv("RAIL_URL"); url != "" {
+		rail = saga.NewHTTPRail(url, 2*time.Second)
+		log.Printf("payment rail: %s", url)
+	} else {
+		log.Printf("payment rail: none configured, every payment succeeds")
+	}
+	orch := saga.NewOrchestrator(saga.NewStore(pool), svc, rail, saga.DefaultConfig())
+
+	// Finish transfers that were mid-way when the service last stopped.
+	if n, err := orch.ResumeRunning(ctx); err != nil {
+		log.Printf("resume sagas: %v", err)
+	} else if n > 0 {
+		log.Printf("resumed %d unfinished transfers", n)
+	}
+
 	health := func(w http.ResponseWriter, r *http.Request) {
 		status, code := "ok", http.StatusOK
 		if err := pool.Ping(r.Context()); err != nil {
@@ -41,8 +79,7 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"service": "wallet", "status": status})
 	}
 
-	svc := ledger.NewService(eventstore.New(pool))
-	handler := logRequests(api.NewServer(svc, health))
+	handler := logRequests(api.NewServer(svc, orch, health))
 
 	srv := &http.Server{Addr: ":" + port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

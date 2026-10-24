@@ -42,12 +42,6 @@ type MoneyPayload struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// operation remembers what an idempotency key was used for.
-type operation struct {
-	Type   string
-	Amount int64
-}
-
 // Wallet is the aggregate: current state rebuilt from events.
 type Wallet struct {
 	ID      string
@@ -56,11 +50,11 @@ type Wallet struct {
 	Version int64 // version of the last applied event (0 = no events)
 
 	opened bool
-	ops    map[string]operation // idempotency key -> what it did
+	ops    map[string]Operation // idempotency key -> what it did
 }
 
 func NewWallet(id string) *Wallet {
-	return &Wallet{ID: id, ops: map[string]operation{}}
+	return &Wallet{ID: id, ops: map[string]Operation{}}
 }
 
 func (w *Wallet) Exists() bool { return w.opened }
@@ -190,7 +184,7 @@ func (w *Wallet) Apply(e eventstore.Event) error {
 			w.Balance -= p.Amount
 		}
 		if p.IdempotencyKey != "" {
-			w.ops[p.IdempotencyKey] = operation{Type: e.Type, Amount: p.Amount}
+			w.ops[p.IdempotencyKey] = Operation{Type: e.Type, Amount: p.Amount}
 		}
 
 	default:

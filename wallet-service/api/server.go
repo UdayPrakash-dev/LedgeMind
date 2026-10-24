@@ -12,18 +12,20 @@ import (
 
 	"ledgemind/wallet-service/domain"
 	"ledgemind/wallet-service/ledger"
+	"ledgemind/wallet-service/saga"
 )
 
 const IdempotencyHeader = "Idempotency-Key"
 
 type Server struct {
-	svc *ledger.Service
-	mux *http.ServeMux
+	svc  *ledger.Service
+	orch *saga.Orchestrator
+	mux  *http.ServeMux
 }
 
 // NewServer registers all routes. health may be nil.
-func NewServer(svc *ledger.Service, health http.HandlerFunc) *Server {
-	s := &Server{svc: svc, mux: http.NewServeMux()}
+func NewServer(svc *ledger.Service, orch *saga.Orchestrator, health http.HandlerFunc) *Server {
+	s := &Server{svc: svc, orch: orch, mux: http.NewServeMux()}
 	if health != nil {
 		s.mux.HandleFunc("GET /health", health)
 	}
@@ -31,6 +33,8 @@ func NewServer(svc *ledger.Service, health http.HandlerFunc) *Server {
 	s.mux.HandleFunc("GET /wallets/{id}", s.getWallet)
 	s.mux.HandleFunc("POST /wallets/{id}/credit", s.money(s.svc.Credit))
 	s.mux.HandleFunc("POST /wallets/{id}/debit", s.money(s.svc.Debit))
+	s.mux.HandleFunc("POST /transfers", s.startTransfer)
+	s.mux.HandleFunc("GET /transfers/{id}", s.getTransfer)
 	return s
 }
 
@@ -124,6 +128,59 @@ func (s *Server) money(op moneyFunc) http.HandlerFunc {
 	}
 }
 
+type transferRequest struct {
+	FromWallet  string `json:"from_wallet"`
+	ToWallet    string `json:"to_wallet"`
+	AmountPaise int64  `json:"amount_paise"`
+}
+
+// startTransfer runs the whole saga before replying. 201 = new transfer,
+// 200 = repeat of an earlier request (same Idempotency-Key). The outcome is in "status".
+func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
+	key := r.Header.Get(IdempotencyHeader)
+	if len(key) > 200 {
+		writeJSON(w, http.StatusBadRequest, errorBody{"idempotency key too long (max 200)"})
+		return
+	}
+	var req transferRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	for _, id := range []string{req.FromWallet, req.ToWallet} {
+		if _, err := uuid.Parse(id); err != nil {
+			writeError(w, domain.ErrWalletNotFound)
+			return
+		}
+	}
+	sg, created, err := s.orch.Start(r.Context(), saga.TransferRequest{
+		From: req.FromWallet, To: req.ToWallet, Amount: req.AmountPaise, Key: key,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	writeJSON(w, status, sg)
+}
+
+func (s *Server) getTransfer(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := uuid.Parse(id); err != nil {
+		writeError(w, saga.ErrNotFound)
+		return
+	}
+	sg, err := s.orch.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sg)
+}
+
 // ---------- helpers ----------
 
 type errorBody struct {
@@ -154,13 +211,16 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, domain.ErrWalletNotFound):
+	case errors.Is(err, domain.ErrWalletNotFound),
+		errors.Is(err, saga.ErrNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, domain.ErrInvalidAmount),
+	case errors.Is(err, saga.ErrInvalidTransfer),
+		errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrInvalidOwner),
 		errors.Is(err, domain.ErrMissingKey):
 		status = http.StatusBadRequest
-	case errors.Is(err, domain.ErrIdempotencyMismatch):
+	case errors.Is(err, domain.ErrIdempotencyMismatch),
+		errors.Is(err, saga.ErrIdempotencyMismatch):
 		status = http.StatusConflict
 	case errors.Is(err, domain.ErrInsufficientFunds):
 		status = http.StatusUnprocessableEntity

@@ -3,42 +3,19 @@ package eventstore
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledgemind/wallet-service/internal/testdb"
 )
 
-// These tests need a running Postgres. Start it with:
-//   docker compose up -d postgres
-// then set DATABASE_URL (see README) and run:  go test ./...
+// These tests need a running Postgres (docker compose up -d postgres) and
+// DATABASE_URL set; see README. Without it they are skipped.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set; skipping Postgres tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	// Make sure the schema exists (safe to run twice).
-	schema, err := os.ReadFile("../../db/init/001_events.sql")
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
-	}
-	return New(pool)
+	return New(testdb.New(t))
 }
 
 // Each test uses a fresh random stream id, so tests never interfere.

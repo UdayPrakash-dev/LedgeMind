@@ -18,8 +18,7 @@ services:
       - "5432:5432"            # exposed so `go test` on your machine can reach it
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Every .sql file in db/init runs once, the first time the volume is created
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      # Tables are created by wallet-service on startup (wallet-service/migrations)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledgemind} -d ${POSTGRES_DB:-ledgemind}"]
       interval: 5s
@@ -54,6 +53,8 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-ledgemind}:${POSTGRES_PASSWORD:-ledgemind}@postgres:5432/${POSTGRES_DB:-ledgemind}?sslmode=disable
       REDIS_ADDR: redis:6379
+      SNAPSHOT_EVERY: "50"
+      RAIL_URL: "${RAIL_URL:-}"     # empty = every payment succeeds (fake-rail arrives Day 4)
       PORT: "8080"
     ports:
       - "8080:8080"

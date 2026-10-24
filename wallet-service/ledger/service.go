@@ -1,10 +1,13 @@
-// Package ledger connects the wallet rules (domain) to the event store.
+// Package ledger connects the wallet rules (domain) to the event store,
+// with an optional snapshot cache in front of it.
 package ledger
 
 import (
 	"context"
 	"errors"
+	"log"
 	"math/rand/v2"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,28 +21,92 @@ var ErrBusy = errors.New("wallet is busy, retry")
 
 const maxAttempts = 10
 
-type Service struct {
-	store *eventstore.Store
+// DefaultSnapshotEvery: take a snapshot each time a wallet passes another 50 events.
+const DefaultSnapshotEvery = 50
+
+// SnapshotStore is a cache. Errors are logged and ignored.
+type SnapshotStore interface {
+	Get(ctx context.Context, walletID string) (*domain.Snapshot, error)
+	Put(ctx context.Context, s domain.Snapshot) error
 }
 
-func NewService(store *eventstore.Store) *Service { return &Service{store: store} }
+// Stats count how wallets were loaded (useful for the paper's numbers).
+type Stats struct {
+	SnapshotHits   atomic.Int64 // loaded from snapshot + tail
+	SnapshotMisses atomic.Int64 // no snapshot: full replay
+	SnapshotErrors atomic.Int64 // Redis failed: full replay
+	EventsReplayed atomic.Int64 // total events applied while loading
+}
+
+type Service struct {
+	store         *eventstore.Store
+	snaps         SnapshotStore // may be nil
+	snapshotEvery int64
+	Stats         Stats
+}
+
+// NewService creates a service. snaps may be nil (no cache). every <= 0 uses the default.
+func NewService(store *eventstore.Store, snaps SnapshotStore, every int64) *Service {
+	if every <= 0 {
+		every = DefaultSnapshotEvery
+	}
+	return &Service{store: store, snaps: snaps, snapshotEvery: every}
+}
 
 func streamID(walletID string) string { return "wallet:" + walletID }
 
-// Get loads a wallet by replaying its events.
+// Get loads a wallet: snapshot + newer events if possible, else full replay.
 func (s *Service) Get(ctx context.Context, walletID string) (*domain.Wallet, error) {
-	events, err := s.store.LoadEvents(ctx, streamID(walletID), 0)
+	w, from := s.fromSnapshot(ctx, walletID)
+	events, err := s.store.LoadEvents(ctx, streamID(walletID), from)
 	if err != nil {
 		return nil, err
 	}
-	w, err := domain.Rehydrate(walletID, events)
-	if err != nil {
-		return nil, err
+	for _, e := range events {
+		if err := w.Apply(e); err != nil {
+			return nil, err
+		}
 	}
+	s.Stats.EventsReplayed.Add(int64(len(events)))
 	if !w.Exists() {
 		return nil, domain.ErrWalletNotFound
 	}
 	return w, nil
+}
+
+// fromSnapshot returns the starting wallet and the version to load events after.
+func (s *Service) fromSnapshot(ctx context.Context, walletID string) (*domain.Wallet, int64) {
+	empty := domain.NewWallet(walletID)
+	if s.snaps == nil {
+		return empty, 0
+	}
+	snap, err := s.snaps.Get(ctx, walletID)
+	if err != nil {
+		s.Stats.SnapshotErrors.Add(1)
+		return empty, 0
+	}
+	if snap == nil {
+		s.Stats.SnapshotMisses.Add(1)
+		return empty, 0
+	}
+	w, err := domain.FromSnapshot(*snap)
+	if err != nil || w.ID != walletID {
+		log.Printf("ignoring bad snapshot for %s: %v", walletID, err)
+		s.Stats.SnapshotErrors.Add(1)
+		return empty, 0
+	}
+	s.Stats.SnapshotHits.Add(1)
+	return w, w.Version
+}
+
+// maybeSnapshot saves a snapshot when the wallet crossed a multiple of snapshotEvery.
+func (s *Service) maybeSnapshot(ctx context.Context, w *domain.Wallet, before int64) {
+	if s.snaps == nil || w.Version/s.snapshotEvery == before/s.snapshotEvery {
+		return
+	}
+	if err := s.snaps.Put(ctx, w.Snapshot()); err != nil {
+		log.Printf("snapshot for %s skipped: %v", w.ID, err)
+	}
 }
 
 // OpenWallet creates a new wallet with a fresh UUIDv7 id.
@@ -61,14 +128,14 @@ func (s *Service) OpenWallet(ctx context.Context, owner string) (*domain.Wallet,
 
 // Credit adds money. applied=false means this idempotency key was already used
 // for the same request, so nothing new happened.
-func (s *Service) Credit(ctx context.Context, walletID string, amount int64, key string) (w *domain.Wallet, applied bool, err error) {
+func (s *Service) Credit(ctx context.Context, walletID string, amount int64, key string) (*domain.Wallet, bool, error) {
 	return s.execute(ctx, walletID, func(w *domain.Wallet) ([]eventstore.NewEvent, error) {
 		return w.Credit(amount, key)
 	})
 }
 
 // Debit removes money; same idempotency behaviour as Credit.
-func (s *Service) Debit(ctx context.Context, walletID string, amount int64, key string) (w *domain.Wallet, applied bool, err error) {
+func (s *Service) Debit(ctx context.Context, walletID string, amount int64, key string) (*domain.Wallet, bool, error) {
 	return s.execute(ctx, walletID, func(w *domain.Wallet) ([]eventstore.NewEvent, error) {
 		return w.Debit(amount, key)
 	})
@@ -90,15 +157,18 @@ func (s *Service) execute(ctx context.Context, walletID string, decide func(*dom
 		if len(evs) == 0 { // repeat of an already-applied request
 			return w, false, nil
 		}
-		_, err = s.store.AppendEvents(ctx, streamID(walletID), w.Version, evs)
+		before := w.Version
+		_, err = s.store.AppendEvents(ctx, streamID(walletID), before, evs)
 		if err == nil {
 			w, err = s.Get(ctx, walletID)
+			if err == nil {
+				s.maybeSnapshot(ctx, w, before)
+			}
 			return w, true, err
 		}
 		if !errors.Is(err, eventstore.ErrConcurrencyConflict) {
 			return nil, false, err
 		}
-		// Small random back-off so racing requests spread out.
 		select {
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
