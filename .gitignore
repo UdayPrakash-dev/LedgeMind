@@ -1,0 +1,11 @@
+.env
+*.exe
+__pycache__/
+.venv/
+bench/results/
+paper/*.aux
+paper/*.log
+paper/*.pdf
+.idea/
+.vscode/
+*.tgz

@@ -1,0 +1,90 @@
+# LedgeMind — local stack
+# Start everything:   docker compose up --build
+# Stop everything:    docker compose down
+# Wipe the database:  docker compose down -v
+
+services:
+  # ---------------------------------------------------------------
+  # Postgres: the event store (permanent history of every change)
+  # ---------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: ledgemind-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ledgemind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledgemind}
+      POSTGRES_DB: ${POSTGRES_DB:-ledgemind}
+    ports:
+      - "5432:5432"            # exposed so `go test` on your machine can reach it
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Every .sql file in db/init runs once, the first time the volume is created
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledgemind} -d ${POSTGRES_DB:-ledgemind}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
+  # Redis: snapshot cache + stuck-saga queue (Redis Streams)
+  # ---------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ledgemind-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
+  # Wallet service (Go): the bank — wallets, transfers, sagas
+  # ---------------------------------------------------------------
+  wallet-service:
+    build: ./wallet-service
+    container_name: ledgemind-wallet
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ledgemind}:${POSTGRES_PASSWORD:-ledgemind}@postgres:5432/${POSTGRES_DB:-ledgemind}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
+  # Recovery service (Python): AI planner + safety checker + memory
+  # ---------------------------------------------------------------
+  recovery-service:
+    build: ./recovery-service
+    container_name: ledgemind-recovery
+    environment:
+      REDIS_ADDR: redis:6379
+      WALLET_URL: http://wallet-service:8080
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-llama-3.1-8b-instant}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      wallet-service:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
