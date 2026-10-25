@@ -46,6 +46,21 @@ class WalletClient:
     def rail(self, saga_id: str) -> list[dict]:
         return self._get(f"/transfers/{saga_id}/rail")
 
+    def balance(self, wallet_id: str) -> int:
+        return int(self._get(f"/wallets/{wallet_id}")["balance_paise"])
+
+    def invariants(self, saga_id: str) -> dict:
+        """The wallet's own invariant check for one transfer (money conserved, ledger matches rail)."""
+        return self._get(f"/admin/invariants?saga_id={saga_id}")
+
+    def post_event(self, saga_id: str, event_type: str, data: dict) -> bool:
+        """Append a RecoveryProposed/Verified/Rejected/Executed event to the audit trail."""
+        try:
+            r = self._http.post(f"/transfers/{saga_id}/recovery-events", json={"type": event_type, "data": data})
+        except httpx.HTTPError:
+            return False
+        return r.status_code == 201
+
     def stuck_transfers(self, limit: int = 500) -> list[dict]:
         return self._get(f"/transfers?status=STUCK&limit={limit}")
 

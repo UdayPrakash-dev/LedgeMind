@@ -8,7 +8,11 @@ from pydantic import BaseModel
 
 from config import Settings
 from consumer import STRATEGIES, Consumer, StrategyHolder
+import facts as facts_mod
+import verifier
+from actions import Plan
 from decisions import DecisionLog
+from memory import Memory
 from planner import LLM, LLMError, OpenAICompatLLM, Planner
 from wallet import WalletClient, WalletError
 
@@ -19,6 +23,14 @@ log = logging.getLogger("recovery")
 
 class StrategyBody(BaseModel):
     strategy: str
+
+
+class VerifyBody(BaseModel):
+    transfer_id: str
+    action: str
+    amount_paise: int | None = None
+    rail: str | None = None
+    reason: str = "manual check"
 
 
 def create_app(settings: Settings | None = None, llm: LLM | None = None,
@@ -32,8 +44,10 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
                                    max_tokens=s.llm_max_tokens, reasoning_effort=s.llm_reasoning_effort)
     strategy = StrategyHolder(s.strategy)
     decisions = DecisionLog(s.decisions_path)
+    memory = Memory(r)
     consumer = Consumer(r, w, Planner(model), decisions, strategy, stream=s.stream, group=s.group,
-                        name=s.consumer, claim_idle_ms=s.claim_idle_ms, max_deliveries=s.max_deliveries)
+                        name=s.consumer, claim_idle_ms=s.claim_idle_ms, max_deliveries=s.max_deliveries,
+                        memory=memory)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -82,6 +96,32 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
     @app.get("/admin/stats")
     def stats():
         return {"strategy": strategy.get(), "model": model.model, **consumer.stats.snapshot()}
+
+    @app.get("/admin/memory")
+    def memory_list():
+        return memory.all()
+
+    @app.post("/admin/memory/clear")
+    def memory_clear():
+        """The benchmark calls this before every run, so no run gets a head start."""
+        return {"deleted": memory.clear()}
+
+    @app.post("/admin/verify")
+    def verify_dry_run(body: VerifyBody):
+        """Ask the verifier about a plan for a real transfer WITHOUT executing it (for demos and debugging)."""
+        try:
+            plan = Plan(action=body.action, amount_paise=body.amount_paise, rail=body.rail, reason=body.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        try:
+            f = facts_mod.gather(w, body.transfer_id)
+        except WalletError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        if f["status"] != "STUCK":
+            raise HTTPException(status_code=409, detail=f"transfer is {f['status']}, not STUCK")
+        v = verifier.verify(plan, f)
+        return {"allowed": v.ok, "reasons": v.reasons, "checks": v.checks,
+                "facts": {k: f.get(k) for k in ("step", "rail", "ledger", "balances")}}
 
     @app.post("/admin/sweep")
     def sweep():

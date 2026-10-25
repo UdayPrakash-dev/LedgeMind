@@ -156,8 +156,7 @@ def test_off_strategy_reads_nothing(r, decisions_path):
 def test_strategy_holder_validates():
     h = StrategyHolder("off")
     h.set("llm_no_verifier")
-    with pytest.raises(ValueError, match="Day 7"):
-        h.set("llm_verified_memory")
+    h.set("llm_verified_memory")
     with pytest.raises(ValueError, match="unknown"):
         h.set("yolo")
-    assert h.get() == "llm_no_verifier"
+    assert h.get() == "llm_verified_memory"

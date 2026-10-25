@@ -19,6 +19,7 @@ import (
 	"ledgemind/wallet-service/eventstore"
 	"ledgemind/wallet-service/ledger"
 	"ledgemind/wallet-service/migrations"
+	"ledgemind/wallet-service/recoverylog"
 	"ledgemind/wallet-service/saga"
 	"ledgemind/wallet-service/snapshot"
 	"ledgemind/wallet-service/stuckqueue"
@@ -52,7 +53,8 @@ func main() {
 		snaps = rs
 	}
 	every, _ := strconv.ParseInt(getenv("SNAPSHOT_EVERY", "50"), 10, 64)
-	svc := ledger.NewService(eventstore.New(pool), snaps, every)
+	events := eventstore.New(pool)
+	svc := ledger.NewService(events, snaps, every)
 
 	// Payment rail: the fake-rail service from Day 4, or "always succeeds" if unset.
 	var rail saga.PaymentRail = saga.AlwaysOKRail{}
@@ -101,7 +103,7 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"service": "wallet", "status": status})
 	}
 
-	handler := logRequests(api.NewServer(svc, orch, auditor, health))
+	handler := logRequests(api.NewServer(svc, orch, auditor, health).WithRecoveryLog(recoverylog.New(events)))
 
 	srv := &http.Server{Addr: ":" + port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

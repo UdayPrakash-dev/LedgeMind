@@ -31,4 +31,5 @@ def gather(wallet: WalletClient, saga_id: str) -> dict:
 
     facts["ledger"] = wallet.money(saga_id)  # debited / credited / refunded / reversed
     facts["rail"] = [{"rail_ref": r["rail_ref"], "state": r["state"]} for r in wallet.rail(saga_id)]
+    facts["balances"] = {"sender": wallet.balance(t["from_wallet"]), "receiver": wallet.balance(t["to_wallet"])}
     return facts

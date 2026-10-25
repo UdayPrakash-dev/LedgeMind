@@ -14,12 +14,15 @@ wallet-service/        Go: event store, wallets, snapshots, transfer sagas
   saga/                transfer saga, recovery policies, executor (the only way to fix a stuck transfer)
   audit/               invariant checks: money conserved, ledger matches the rail
   stuckqueue/          pushes STUCK transfers to the Redis Stream "stuck-sagas"
+  recoverylog/         recovery decisions as events (stream "recovery:<transfer id>")
   api/                 HTTP endpoints
 recovery-service/      Python: reads stuck-sagas, asks the AI for one action, applies it via the executor
   consumer.py          Redis Stream consumer (ack after handling, resumes pending after a crash)
   facts.py             what the AI may see: transfer, ledger state, rail state
   planner.py           prompt, OpenAI-compatible LLM client (rate limit, retries), strict parsing
   actions.py           the 5 allowed actions (Pydantic)
+  verifier.py          the safety checker: 10 deterministic rules, each a pure function
+  memory.py            resolution memory in Redis (key: service|step|error type|rail state)
   decisions.py         one JSON line per decision -> bench/results/decisions.jsonl
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
 bench/                 benchmark harness (Day 8)
@@ -74,11 +77,31 @@ Put your key in `.env` (never commit it): `LLM_API_KEY=...`. Model and endpoint:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | status, strategy, model, `llm_key_set` (never the key) |
-| `GET/POST /admin/strategy` | `{"strategy":"off"}` or `{"strategy":"llm_no_verifier"}` |
+| `GET/POST /admin/strategy` | `off`, `llm_no_verifier` or `llm_verified_memory` |
+| `GET /admin/memory` | remembered fixes, with hit counts |
+| `POST /admin/memory/clear` | forget everything (the benchmark does this before each run) |
+| `POST /admin/verify` | dry run: `{"transfer_id":"..","action":"compensate"}` -> would the verifier allow it, and why (nothing is executed) |
 | `GET /admin/stats` | counts: handled, skipped, executed, LLM calls, parse failures, errors |
 | `POST /admin/sweep` | handle every STUCK transfer now (safety net) |
 
 Use `off` while benchmarking the baselines, so the AI does not touch their stuck transfers.
+
+**`llm_verified_memory`** for each stuck transfer: (1) a remembered fix for the same `service|step|error type|rail state`, if any; (2) otherwise ask the AI; (3) every plan goes through the verifier; a rejected plan is sent back to the AI once with the reason; a second rejection escalates to a human; (4) an AI fix is remembered only if it executed and `/admin/invariants` is clean afterwards.
+
+| Verifier rule | Blocks |
+| --- | --- |
+| `loop_limit` | anything but escalate after 3 recovery actions |
+| `action_fits_step` | reroute outside CALL_RAIL, retry at RECONCILE |
+| `money_conserved` | any action whose simulated result gives back or delivers more than was taken |
+| `no_negative_balance` | taking back a credit the receiver no longer has; debiting a sender without funds |
+| `compensate_needs_commit` | compensate / refund when nothing was debited |
+| `refund_within_debited` | refunding more than is still held |
+| `idempotency_key_unused` | a second partial refund or refund under an already-used key |
+| `no_refund_after_rail_paid` | compensate / partial refund when the rail says PAID |
+| `no_double_rail_payment` | reroute when the rail says PAID |
+| `no_futile_retry` | retrying a payment the rail already REJECTED |
+
+Every decision is stored as events in the wallet's event store: `GET /transfers/{id}/recovery-events` shows `RecoveryProposed`, `RecoveryVerified` / `RecoveryRejected`, `RecoveryExecuted`.
 
 Tests (from the `ledgemind` folder, with the stack running):
 

@@ -99,7 +99,7 @@ services:
       LLM_MIN_INTERVAL_S: "${LLM_MIN_INTERVAL_S:-2.0}"  # rate limit: seconds between AI calls
       LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-1024}"        # reasoning models think before answering
       LLM_REASONING_EFFORT: "${LLM_REASONING_EFFORT:-low}"  # low | medium | high (gpt-oss); ignored if unsupported
-      STRATEGY: "${STRATEGY:-llm_no_verifier}"         # off | llm_no_verifier (Day 7: llm_verified_memory)
+      STRATEGY: "${STRATEGY:-llm_no_verifier}"         # off | llm_no_verifier | llm_verified_memory
       CONSUMER_NAME: recovery-1                        # fixed name: after a restart it resumes its own pending messages
       DECISIONS_PATH: /data/decisions.jsonl
     volumes:

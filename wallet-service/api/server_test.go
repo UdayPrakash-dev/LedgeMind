@@ -15,6 +15,7 @@ import (
 	"ledgemind/wallet-service/eventstore"
 	"ledgemind/wallet-service/internal/testdb"
 	"ledgemind/wallet-service/ledger"
+	"ledgemind/wallet-service/recoverylog"
 	"ledgemind/wallet-service/saga"
 )
 
@@ -338,4 +339,38 @@ func TestRecoveryEndpoints(t *testing.T) {
 	}
 	expect(t, call(t, srv, "GET", "/admin/invariants?since=yesterday", "", ""), 400, "bad since")
 	expect(t, call(t, srv, "POST", "/admin/reconcile", "", ""), 200, "reconcile")
+}
+
+func TestRecoveryEventEndpoints(t *testing.T) {
+	pool := testdb.New(t)
+	led := ledger.NewService(eventstore.New(pool), nil, 0)
+	store := saga.NewStore(pool)
+	cfg := saga.Config{Policy: saga.PolicyRefund, Retries: 1, Backoff: time.Millisecond, RunLimit: 10 * time.Second}
+	orch := saga.NewOrchestrator(store, led, saga.AlwaysOKRail{}, cfg)
+	srv := httptest.NewServer(NewServer(led, orch, audit.New(pool, store, led, nil), nil).
+		WithRecoveryLog(recoverylog.New(eventstore.New(pool))))
+	defer srv.Close()
+
+	a := call(t, srv, "POST", "/wallets", "", `{"owner":"a"}`).Body["id"].(string)
+	b := call(t, srv, "POST", "/wallets", "", `{"owner":"b"}`).Body["id"].(string)
+	call(t, srv, "POST", "/wallets/"+a+"/credit", "seed", `{"amount_paise":5000}`)
+	id := call(t, srv, "POST", "/transfers", "ev-"+a, fmt.Sprintf(`{"from_wallet":%q,"to_wallet":%q,"amount_paise":100}`, a, b)).Body["id"].(string)
+
+	r := call(t, srv, "POST", "/transfers/"+id+"/recovery-events", "", `{"type":"RecoveryProposed","data":{"action":"retry_step","source":"llm"}}`)
+	expect(t, r, 201, "add event")
+	expect(t, call(t, srv, "POST", "/transfers/"+id+"/recovery-events", "", `{"type":"RecoveryRejected","data":{"reasons":["rail PAID"]}}`), 201, "add event 2")
+	expect(t, call(t, srv, "POST", "/transfers/"+id+"/recovery-events", "", `{"type":"Nope","data":{}}`), 400, "bad type")
+	expect(t, call(t, srv, "POST", "/transfers/01928c4e-0000-7000-8000-000000000000/recovery-events", "", `{"type":"RecoveryProposed","data":{}}`), 404, "unknown transfer")
+
+	req, _ := http.NewRequest("GET", srv.URL+"/transfers/"+id+"/recovery-events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 2 || list[0]["type"] != "RecoveryProposed" || list[1]["type"] != "RecoveryRejected" {
+		t.Fatalf("events = %v", list)
+	}
 }

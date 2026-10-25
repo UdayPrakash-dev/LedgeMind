@@ -15,6 +15,7 @@ import (
 	"ledgemind/wallet-service/audit"
 	"ledgemind/wallet-service/domain"
 	"ledgemind/wallet-service/ledger"
+	"ledgemind/wallet-service/recoverylog"
 	"ledgemind/wallet-service/saga"
 )
 
@@ -24,8 +25,12 @@ type Server struct {
 	svc     *ledger.Service
 	orch    *saga.Orchestrator
 	auditor *audit.Auditor
+	reclog  *recoverylog.Log // may be nil: recovery-event endpoints answer 501
 	mux     *http.ServeMux
 }
+
+// WithRecoveryLog enables POST/GET /transfers/{id}/recovery-events.
+func (s *Server) WithRecoveryLog(l *recoverylog.Log) *Server { s.reclog = l; return s }
 
 // NewServer registers all routes. health may be nil.
 func NewServer(svc *ledger.Service, orch *saga.Orchestrator, auditor *audit.Auditor, health http.HandlerFunc) *Server {
@@ -52,6 +57,10 @@ func NewServer(svc *ledger.Service, orch *saga.Orchestrator, auditor *audit.Audi
 	s.mux.HandleFunc("GET /admin/invariants", s.invariants)
 	s.mux.HandleFunc("POST /admin/reconcile", s.reconcile)
 	s.mux.HandleFunc("GET /admin/stats", s.stats)
+
+	// Audit trail of recovery decisions (stored in the event store).
+	s.mux.HandleFunc("POST /transfers/{id}/recovery-events", s.addRecoveryEvent)
+	s.mux.HandleFunc("GET /transfers/{id}/recovery-events", s.listRecoveryEvents)
 	return s
 }
 
@@ -355,6 +364,66 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"snapshot_errors": st.SnapshotErrors.Load(),
 		"events_replayed": st.EventsReplayed.Load(),
 	})
+}
+
+// addRecoveryEvent: {"type":"RecoveryProposed|RecoveryVerified|RecoveryRejected|RecoveryExecuted","data":{...}}
+func (s *Server) addRecoveryEvent(w http.ResponseWriter, r *http.Request) {
+	if s.reclog == nil {
+		writeJSON(w, http.StatusNotImplemented, errorBody{"recovery log not enabled"})
+		return
+	}
+	id, ok := transferID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Type string         `json:"type"`
+		Data map[string]any `json:"data"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if !recoverylog.ValidType(body.Type) {
+		writeJSON(w, http.StatusBadRequest, errorBody{recoverylog.ErrInvalidType.Error()})
+		return
+	}
+	if _, err := s.orch.Get(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	v, err := s.reclog.Append(r.Context(), id, body.Type, body.Data)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"stream": recoverylog.StreamID(id), "version": v})
+}
+
+func (s *Server) listRecoveryEvents(w http.ResponseWriter, r *http.Request) {
+	if s.reclog == nil {
+		writeJSON(w, http.StatusNotImplemented, errorBody{"recovery log not enabled"})
+		return
+	}
+	id, ok := transferID(w, r)
+	if !ok {
+		return
+	}
+	evs, err := s.reclog.List(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	type out struct {
+		Version   int64           `json:"version"`
+		Type      string          `json:"type"`
+		Data      json.RawMessage `json:"data"`
+		CreatedAt time.Time       `json:"created_at"`
+	}
+	list := make([]out, 0, len(evs))
+	for _, e := range evs {
+		list = append(list, out{e.Version, e.Type, e.Payload, e.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func transferID(w http.ResponseWriter, r *http.Request) (string, bool) {
