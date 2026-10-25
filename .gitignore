@@ -8,4 +8,6 @@ paper/*.log
 paper/*.pdf
 .idea/
 .vscode/
+.pytest_cache/
+recovery-service/tests/.tmp-*
 *.tgz

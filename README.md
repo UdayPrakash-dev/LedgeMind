@@ -15,7 +15,12 @@ wallet-service/        Go: event store, wallets, snapshots, transfer sagas
   audit/               invariant checks: money conserved, ledger matches the rail
   stuckqueue/          pushes STUCK transfers to the Redis Stream "stuck-sagas"
   api/                 HTTP endpoints
-recovery-service/      Python: AI planner, verifier, resolution memory (Day 6+)
+recovery-service/      Python: reads stuck-sagas, asks the AI for one action, applies it via the executor
+  consumer.py          Redis Stream consumer (ack after handling, resumes pending after a crash)
+  facts.py             what the AI may see: transfer, ledger state, rail state
+  planner.py           prompt, OpenAI-compatible LLM client (rate limit, retries), strict parsing
+  actions.py           the 5 allowed actions (Pydantic)
+  decisions.py         one JSON line per decision -> bench/results/decisions.jsonl
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
 bench/                 benchmark harness (Day 8)
 paper/                 LaTeX source
@@ -61,6 +66,25 @@ All money is in paise (int64). Writes need an `Idempotency-Key` header.
 | `GET /transfers/{id}` | | 200 transfer with step history / 404 |
 
 Transfer statuses: `COMPLETED`, `FAILED` (debit rejected, nothing moved), `COMPENSATED` (sender refunded), `STUCK` (waiting for recovery), `ESCALATED` (handed to a human), `RUNNING`.
+
+## Recovery service (port 8000)
+
+Put your key in `.env` (never commit it): `LLM_API_KEY=...`. Model and endpoint: `LLM_BASE_URL`, `LLM_MODEL`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | status, strategy, model, `llm_key_set` (never the key) |
+| `GET/POST /admin/strategy` | `{"strategy":"off"}` or `{"strategy":"llm_no_verifier"}` |
+| `GET /admin/stats` | counts: handled, skipped, executed, LLM calls, parse failures, errors |
+| `POST /admin/sweep` | handle every STUCK transfer now (safety net) |
+
+Use `off` while benchmarking the baselines, so the AI does not touch their stuck transfers.
+
+Tests (from the `ledgemind` folder, with the stack running):
+
+```cmd
+docker run --rm --network ledgemind_default -e REDIS_ADDR=redis:6379 -v "%cd%\recovery-service:/app" -w /app python:3.12-slim sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q"
+```
 
 ## Recovery
 
