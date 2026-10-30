@@ -23,6 +23,7 @@ recovery-service/      Python: reads stuck-sagas, asks the AI for one action, ap
   actions.py           the 5 allowed actions (Pydantic)
   verifier.py          the safety checker: 10 deterministic rules, each a pure function
   memory.py            resolution memory in Redis (key: service|step|error type|rail state)
+  ablation.py          experiment switches: hide the rail from the AI, inject wrong plans, memory off
   decisions.py         one JSON line per decision -> bench/results/decisions.jsonl
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
 bench/                 benchmark harness: run.py (stdlib only), results/ (CSV output, not in Git)
@@ -82,7 +83,8 @@ Put your key in `.env` (never commit it): `LLM_API_KEY=...`. Model and endpoint:
 | `GET /admin/memory` | remembered fixes, with hit counts |
 | `POST /admin/memory/clear` | forget everything (the benchmark does this before each run) |
 | `POST /admin/verify` | dry run: `{"transfer_id":"..","action":"compensate"}` -> would the verifier allow it, and why (nothing is executed) |
-| `GET /admin/stats` | counts: handled, skipped, executed, LLM calls, parse failures, errors |
+| `GET /admin/stats` | counts: handled, executed, LLM calls, prompt / cached tokens, injected errors, errors |
+| `GET/POST /admin/ablation` | experiment switches: `{"hide_rail":true,"inject_rate":0.2,"use_memory":true,"seed":1}`; `{}` turns all off |
 | `POST /admin/sweep` | handle every STUCK transfer now (safety net) |
 
 Use `off` while benchmarking the baselines, so the AI does not touch their stuck transfers.
@@ -109,6 +111,20 @@ Tests (from the `ledgemind` folder, with the stack running):
 ```cmd
 docker run --rm --network ledgemind_default -e REDIS_ADDR=redis:6379 -v "%cd%\recovery-service:/app" -w /app python:3.12-slim sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q"
 ```
+
+**Experiments (ablations)**, set by the benchmark through `/admin/ablation`:
+
+| Switch | What changes | What it measures |
+| --- | --- | --- |
+| `hide_rail` (B) | the AI sees `"rail": "hidden..."` instead of the rail state; the verifier still checks the real state | how many unsafe guesses the verifier stops when the AI lacks the key fact |
+| `inject_rate` (C) | that share of AI plans is replaced by a random wrong action (never escalate), seeded | how many wrong plans reach the bank with vs without the verifier |
+| `use_memory: false` | no memory lookups or stores | the verifier's effect alone |
+
+Injected plans are never stored in memory. Every decision line records `injected`, `cached_tokens` and the `ablation` label.
+
+**Prompt (KV) caching**: the system prompt and examples are identical in every call, so providers that cache prompts
+(OpenAI, Groq and others) reuse that prefix. The planner records `usage.prompt_tokens_details.cached_tokens`
+(0 when a provider does not report it); the benchmark reports `cached_tokens / prompt_tokens` as `cache_hit_pct`.
 
 ## Recovery
 
@@ -180,6 +196,9 @@ How the fault for each payment is chosen (first match wins):
 ```cmd
 bench.bat --n 10 --seed 1      &REM smoke test: 2 failures of each type, short load test
 bench.bat --n 100 --seed 1     &REM full run (Linux/VM: make bench SEED=1)
+bench.bat --n 100 --seed 1 --hide-rail          &REM ablation B (only the 2 AI strategies)
+bench.bat --n 100 --seed 1 --inject-rate 0.2    &REM ablation C
+bench.bat --n 100 --seed 1 --no-memory          &REM verifier without memory
 ```
 
 For each strategy (`static`, `retry`, `llm_no_verifier`, `llm_verified_memory`) the harness:
@@ -192,8 +211,8 @@ escalated so the next strategy never sees them.
 | File | Contents |
 | --- | --- |
 | `failures_<seed>.csv` | the plan and correct resolution, written before anything runs |
-| `run_<seed>_<strategy>.csv` | per failure: rail truth, expected, final status, action, resolved, unsafe, escalated, time to resolve, LLM calls, memory hit, verifier rejections |
-| `summary.csv`, `summary_by_fault.csv` | per strategy (and per fault), appended across runs |
+| `run_<seed>_<strategy>[_<variant>].csv` | per failure: rail truth, expected, final status, action, resolved, unsafe, escalated, time to resolve, LLM calls, memory hit, verifier rejections, tokens (prompt / cached / completion), injected errors |
+| `summary.csv`, `summary_by_fault.csv` | per strategy and `variant` (`main`, `hide_rail`, `inject20`, ...), appended across runs; also `cache_hit_pct`, `mean_llm_latency_ms`, `injected_executed` |
 | `throughput_<seed>.csv` | fault-free transfers at a fixed rate with the recovery service idle vs busy |
 
 `resolved` = final status equals the expected one and no invariant violations. `unsafe` = a violation an action caused (money paid out twice, double rail payment, money created).

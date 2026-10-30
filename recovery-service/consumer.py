@@ -15,6 +15,7 @@ import redis
 
 import facts as facts_mod
 import verifier
+from ablation import Ablation
 from actions import Plan, escalate
 from decisions import DecisionLog
 from memory import Memory, key_for
@@ -50,7 +51,9 @@ class Stats:
     FIELDS = ("received", "handled", "skipped_not_stuck", "executed", "executor_rejected",
               "llm_calls", "parse_failures", "fallback_escalations", "errors", "dead_lettered",
               "verifier_approved", "verifier_rejected", "verifier_escalations",
-              "memory_hits", "memory_rejected", "memory_stored", "event_write_failures")
+              "memory_hits", "memory_rejected", "memory_stored", "event_write_failures",
+              "llm_prompt_tokens", "llm_cached_tokens",
+              "injected_errors", "injected_blocked", "injected_executed")
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -70,9 +73,10 @@ class Consumer:
     def __init__(self, r: redis.Redis, wallet: WalletClient, planner: Planner, decisions: DecisionLog,
                  strategy: StrategyHolder, stream: str = "stuck-sagas", group: str = "recovery",
                  name: str = "recovery-1", claim_idle_ms: int = 60_000, max_deliveries: int = 3,
-                 memory: Memory | None = None):
+                 memory: Memory | None = None, ablation: Ablation | None = None):
         self.r, self.wallet, self.planner, self.decisions = r, wallet, planner, decisions
         self.memory = memory or Memory(r)
+        self.ablation = ablation or Ablation()
         self.strategy = strategy
         self.stream, self.group, self.name = stream, group, name
         self.claim_idle_ms, self.max_deliveries = claim_idle_ms, max_deliveries
@@ -243,6 +247,8 @@ class Consumer:
 
     def _count_llm(self, outcome) -> None:
         self.stats.inc("llm_calls", outcome.attempts)
+        self.stats.inc("llm_prompt_tokens", outcome.prompt_tokens)
+        self.stats.inc("llm_cached_tokens", outcome.cached_tokens)
         self.stats.inc("parse_failures", outcome.parse_failures)
         if outcome.fallback:
             self.stats.inc("fallback_escalations")
@@ -257,23 +263,46 @@ class Consumer:
                     error=None if res.ok else res.body.get("error"))
         return res
 
+    def _ask(self, f: dict, injected: list[dict], attempt: int, feedback: str | None = None):
+        """One planner call: the AI sees the (possibly filtered) facts; its plan may be corrupted (ablation C)."""
+        out = self.planner.plan(self.ablation.facts_for_ai(f), feedback=feedback)
+        self._count_llm(out)
+        if not out.fallback:  # a parse-failure escalation is not an AI choice; never corrupt it
+            plan, hit = self.ablation.maybe_inject(out.plan, f)
+            if hit:
+                self.stats.inc("injected_errors")
+                injected.append({"attempt": attempt, "ai_action": out.plan.action, "injected_action": plan.action,
+                                 "blocked": False, "executed": False})
+                out.plan = plan
+        return out
+
+    def _mark_injected(self, injected: list[dict], attempt: int, field: str) -> None:
+        for i in injected:
+            if i["attempt"] == attempt:
+                i[field] = True
+                self.stats.inc(f"injected_{field}")
+
     # ---------- strategy: llm_no_verifier ----------
 
     def _handle_unverified(self, saga_id: str, f: dict, strategy: str) -> dict:
-        outcome = self.planner.plan(f)
-        self._count_llm(outcome)
+        injected: list[dict] = []
+        outcome = self._ask(f, injected, 1)
         plan = outcome.plan
         self._event(saga_id, "RecoveryProposed", source="llm", attempt=1, actor=strategy,
-                    plan=plan.model_dump(exclude_none=True))
+                    plan=plan.model_dump(exclude_none=True), injected=bool(injected))
         res = self._execute(saga_id, plan, strategy, "llm")
+        if res.ok:
+            self._mark_injected(injected, 1, "executed")
         return self._log(saga_id, strategy, f, source="llm", first=plan, final=plan, verdict="not_checked",
-                         res=res, llm=[outcome])
+                         res=res, llm=[outcome], injected=injected)
 
     # ---------- strategy: llm_verified_memory ----------
 
     def _handle_verified(self, saga_id: str, f: dict, strategy: str) -> dict:
         key = key_for(f)
         rejections: list[dict] = []
+        injected: list[dict] = []
+        final_attempt = 0
         llm_outcomes = []
         first: Plan | None = None
         final: Plan | None = None
@@ -291,12 +320,14 @@ class Consumer:
             else:
                 self.stats.inc("verifier_rejected")
                 rejections.append({"source": src, "action": plan.action, "reasons": v.reasons})
+                self._mark_injected(injected, attempt, "blocked")
                 self._event(saga_id, "RecoveryRejected", source=src, attempt=attempt, action=plan.action,
                             reasons=v.reasons, checks=v.checks)
             return v.ok
 
         # 1. Memory first: a fix that worked before for the same kind of failure.
-        remembered = self.memory.get(key)
+        use_memory = self.ablation.get().use_memory
+        remembered = self.memory.get(key) if use_memory else None
         if remembered is not None:
             self.stats.inc("memory_hits")
             if check(remembered, "memory", 0):
@@ -306,20 +337,18 @@ class Consumer:
 
         # 2. Ask the AI; if the verifier rejects, ask once more with the reason.
         if final is None:
-            out = self.planner.plan(f)
+            out = self._ask(f, injected, 1)
             llm_outcomes.append(out)
-            self._count_llm(out)
             if check(out.plan, "llm", 1):
-                final, source = out.plan, "llm"
+                final, source, final_attempt = out.plan, "llm", 1
             else:
                 reasons = "; ".join(rejections[-1]["reasons"])
                 feedback = (f"The safety checker REJECTED your choice {out.plan.action!r}: {reasons}. "
                             "Choose a different action that follows the bank rules.")
-                out2 = self.planner.plan(f, feedback=feedback)
+                out2 = self._ask(f, injected, 2, feedback=feedback)
                 llm_outcomes.append(out2)
-                self._count_llm(out2)
                 if check(out2.plan, "llm_retry", 2):
-                    final, source = out2.plan, "llm_retry"
+                    final, source, final_attempt = out2.plan, "llm_retry", 2
 
         # 3. Two rejections: hand it to a human.
         if final is None:
@@ -330,10 +359,14 @@ class Consumer:
             check(final, source, 3)
 
         res = self._execute(saga_id, final, strategy, source)
+        if res.ok and final_attempt:
+            self._mark_injected(injected, final_attempt, "executed")
+        final_injected = any(i["attempt"] == final_attempt for i in injected) if final_attempt else False
 
         # 4. Learn: remember an AI fix only if it worked AND the books are clean afterwards.
         stored = False
-        if res.ok and source in ("llm", "llm_retry") and res.body.get("status") in GOOD_END_STATES:
+        if (use_memory and not final_injected and res.ok and source in ("llm", "llm_retry")
+                and res.body.get("status") in GOOD_END_STATES):
             try:
                 if self.wallet.invariants(saga_id).get("ok"):
                     stored = self.memory.put(key, final, saga_id)
@@ -350,12 +383,12 @@ class Consumer:
             verdict = "approved_after_rejection"
         return self._log(saga_id, strategy, f, source=source, first=first, final=final, verdict=verdict,
                          res=res, llm=llm_outcomes, rejections=rejections, memory_key=key,
-                         memory_hit=remembered is not None, stored_in_memory=stored)
+                         memory_hit=remembered is not None, stored_in_memory=stored, injected=injected)
 
     # ---------- decision log ----------
 
     def _log(self, saga_id, strategy, f, *, source, first, final, verdict, res, llm,
-             rejections=None, memory_key=None, memory_hit=False, stored_in_memory=False) -> dict:
+             rejections=None, memory_key=None, memory_hit=False, stored_in_memory=False, injected=None) -> dict:
         return self.decisions.write(
             saga_id=saga_id, strategy=strategy, source=source,
             step=f["step"], last_error=f["last_error"][:300], rail=f.get("rail"),
@@ -367,7 +400,8 @@ class Consumer:
             executor_error=None if res.ok else res.body.get("error"),
             memory_key=memory_key, memory_hit=memory_hit, stored_in_memory=stored_in_memory,
             latency_ms=sum(o.latency_ms for o in llm), prompt_tokens=sum(o.prompt_tokens for o in llm),
-            completion_tokens=sum(o.completion_tokens for o in llm), attempt=sum(o.attempts for o in llm),
+            completion_tokens=sum(o.completion_tokens for o in llm), cached_tokens=sum(o.cached_tokens for o in llm),
+            attempt=sum(o.attempts for o in llm), injected=injected or [], ablation=self.ablation.get().label(),
             parse_failures=sum(o.parse_failures for o in llm), fallback=any(o.fallback for o in llm),
             model=getattr(self.planner.llm, "model", ""),
         )

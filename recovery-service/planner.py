@@ -61,6 +61,16 @@ class LLMReply:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
+    cached_tokens: int = 0  # prompt tokens the provider served from its prompt (KV) cache
+
+
+def cached_tokens(usage: dict) -> int:
+    """Cached prompt tokens, in whichever field the provider uses (0 if it does not report them)."""
+    details = usage.get("prompt_tokens_details") or {}
+    for v in (details.get("cached_tokens"), usage.get("cached_tokens"), usage.get("prompt_cache_hit_tokens")):
+        if isinstance(v, int) and v > 0:
+            return v
+    return 0
 
 
 class LLM(Protocol):
@@ -124,11 +134,12 @@ class OpenAICompatLLM:
                         # Reasoning used up max_tokens before any answer: counts as an unusable reply.
                         return LLMReply(text="(no answer: max_tokens reached while reasoning; raise LLM_MAX_TOKENS)",
                                         prompt_tokens=usage.get("prompt_tokens", 0),
-                                        completion_tokens=usage.get("completion_tokens", 0), latency_ms=latency)
+                                        completion_tokens=usage.get("completion_tokens", 0), latency_ms=latency,
+                                        cached_tokens=cached_tokens(usage))
                     return LLMReply(text=choice["message"]["content"] or "",
                                     prompt_tokens=usage.get("prompt_tokens", 0),
                                     completion_tokens=usage.get("completion_tokens", 0),
-                                    latency_ms=latency)
+                                    latency_ms=latency, cached_tokens=cached_tokens(usage))
                 if r.status_code == 400 and self.json_mode and "response_format" in r.text:
                     self.json_mode = False  # provider has no JSON mode; rely on the prompt
                     continue
@@ -181,6 +192,7 @@ class PlanOutcome:
     fallback: bool = False       # True = both replies were unusable, so we escalated
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
     latency_ms: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -207,6 +219,7 @@ class Planner:
             out.attempts += 1
             out.prompt_tokens += reply.prompt_tokens
             out.completion_tokens += reply.completion_tokens
+            out.cached_tokens += reply.cached_tokens
             out.latency_ms += reply.latency_ms
             try:
                 out.plan = parse(reply.text)

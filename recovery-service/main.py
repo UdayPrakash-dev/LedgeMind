@@ -10,6 +10,7 @@ from config import Settings
 from consumer import STRATEGIES, Consumer, StrategyHolder
 import facts as facts_mod
 import verifier
+from ablation import Ablation, AblationConfig
 from actions import Plan
 from decisions import DecisionLog
 from memory import Memory
@@ -23,6 +24,13 @@ log = logging.getLogger("recovery")
 
 class StrategyBody(BaseModel):
     strategy: str
+
+
+class AblationBody(BaseModel):
+    hide_rail: bool = False
+    inject_rate: float = 0.0
+    use_memory: bool = True
+    seed: int = 0
 
 
 class VerifyBody(BaseModel):
@@ -45,9 +53,10 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
     strategy = StrategyHolder(s.strategy)
     decisions = DecisionLog(s.decisions_path)
     memory = Memory(r)
+    ablation = Ablation()
     consumer = Consumer(r, w, Planner(model), decisions, strategy, stream=s.stream, group=s.group,
                         name=s.consumer, claim_idle_ms=s.claim_idle_ms, max_deliveries=s.max_deliveries,
-                        memory=memory)
+                        memory=memory, ablation=ablation)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -74,6 +83,7 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
             "service": "recovery",
             "status": "ok" if redis_ok == "ok" else "degraded",
             "strategy": strategy.get(),
+            "ablation": ablation.get().label(),
             "llm_model": model.model,
             "llm_key_set": bool(s.llm_api_key),  # never the key itself
             "consumer_running": consumer.running,
@@ -92,6 +102,21 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
             raise HTTPException(status_code=400, detail=str(e))
         log.info("strategy switched to %s", body.strategy)
         return {"strategy": strategy.get()}
+
+    @app.get("/admin/ablation")
+    def get_ablation():
+        c = ablation.get()
+        return {**c.__dict__, "label": c.label()}
+
+    @app.post("/admin/ablation")
+    def set_ablation(body: AblationBody):
+        """Experiment switches (see ablation.py). POST {} to turn everything off again."""
+        try:
+            ablation.set(AblationConfig(**body.model_dump()))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        log.info("ablation set to %s", ablation.get().label())
+        return get_ablation()
 
     @app.get("/admin/stats")
     def stats():

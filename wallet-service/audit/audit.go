@@ -7,7 +7,7 @@
 //	money_created                a saga returned/delivered more than it took (in-flight < 0)
 //	over_delivery                receiver got more than the amount, or sender got back more than was taken
 //	unsettled_terminal_saga      a finished saga (COMPLETED/COMPENSATED/FAILED) still has money in flight
-//	rail_paid_but_refunded       sender refunded although the rail really paid (money left twice)
+//	rail_paid_but_refunded       sender refunded (fully or partly) although the rail really paid (money left twice)
 //	delivered_but_rail_not_paid  receiver credited although the rail rejected/reversed/never got it
 //	double_rail_payment          the rail paid more than once for one transfer
 //
@@ -240,8 +240,9 @@ func (a *Auditor) Check(ctx context.Context, opt Options) (*Report, error) {
 		if f.Delivered > 0 && paid == 0 {
 			bad("delivered_but_rail_not_paid", "receiver credited but rail says %s", strings.Join(states, ", "))
 		}
-		if f.Delivered == 0 && f.Back >= f.Out && paid > 0 {
-			bad("rail_paid_but_refunded", "sender refunded but rail says %s", strings.Join(states, ", "))
+		if f.Back > 0 && paid > 0 {
+			// Any refund (full or partial) after the rail paid: that part of the money left twice.
+			bad("rail_paid_but_refunded", "sender refunded %d paise but rail says %s", f.Back, strings.Join(states, ", "))
 		}
 	}
 

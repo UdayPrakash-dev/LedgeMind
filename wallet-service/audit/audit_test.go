@@ -135,6 +135,17 @@ func TestRefundAfterPaidTimeoutIsCaught(t *testing.T) {
 	expectKinds(t, e.check(t, sg.ID), "rail_paid_but_refunded")
 }
 
+// A partial refund after the rail paid also sends (part of) the money out twice.
+func TestPartialRefundAfterPaidIsCaught(t *testing.T) {
+	e := newEnv(t)
+	e.rail.failOnce("PAID")
+	sg := e.transfer(t, saga.PolicyEscalate)
+	if _, err := e.orch.Execute(context.Background(), sg.ID, saga.Action{Type: saga.ActionPartialRefund, Amount: 500}); err != nil {
+		t.Fatal(err)
+	}
+	expectKinds(t, e.check(t, sg.ID), "rail_paid_but_refunded")
+}
+
 func TestStuckSagaWithMoneyInFlightIsNotAViolation(t *testing.T) {
 	e := newEnv(t)
 	e.rail.failOnce("PAID")
