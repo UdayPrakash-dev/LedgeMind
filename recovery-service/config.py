@@ -17,12 +17,12 @@ class Settings:
 
     strategy: str = field(default_factory=lambda: _env("STRATEGY", "llm_no_verifier"))
 
-    llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/"))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "openai/gpt-oss-20b"))
+    llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "gemini-3.5-flash-lite"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY"), repr=False)  # repr=False: never shown
     llm_timeout_s: float = field(default_factory=lambda: float(_env("LLM_TIMEOUT_S", "30")))
-    llm_min_interval_s: float = field(default_factory=lambda: float(_env("LLM_MIN_INTERVAL_S", "2.0")))
-    # Reasoning models (e.g. openai/gpt-oss-*) spend tokens thinking before answering.
+    llm_min_interval_s: float = field(default_factory=lambda: float(_env("LLM_MIN_INTERVAL_S", "4.5")))
+    # Thinking models spend tokens reasoning before answering.
     llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "1024")))
     llm_reasoning_effort: str = field(default_factory=lambda: _env("LLM_REASONING_EFFORT"))  # "", low, medium, high
 

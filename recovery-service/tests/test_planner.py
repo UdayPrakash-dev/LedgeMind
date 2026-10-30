@@ -145,3 +145,22 @@ def test_reasoning_model_out_of_tokens_is_an_unusable_reply_not_a_crash():
     llm = OpenAICompatLLM("https://llm.test/v1", "m", "k", min_interval_s=0)
     out = Planner(llm).plan(FACTS)
     assert out.fallback and out.parse_failures == 2 and "max_tokens" in out.errors[0]
+
+
+@respx.mock
+def test_ping_reports_quota_errors_without_retrying():
+    route = respx.post(URL).mock(return_value=httpx.Response(429, json={"error": {"message": "tokens per day"}},
+                                                                headers={"retry-after": "600"}))
+    llm = OpenAICompatLLM("https://llm.test/v1", "m", "secret-key", min_interval_s=0)
+    res = llm.ping()
+    assert res["ok"] is False and res["status"] == 429 and res["retry_after"] == "600"
+    assert len(route.calls) == 1 and llm.rate_limited == 1 and "secret-key" not in str(res)
+
+
+@respx.mock
+def test_rate_limit_is_counted_and_shown_without_key(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    respx.post(URL).mock(side_effect=[httpx.Response(429, text="slow down"), _ok('{"action":"escalate","reason":"x y z"}')])
+    llm = OpenAICompatLLM("https://llm.test/v1", "m", "secret-key", min_interval_s=0)
+    llm.complete([{"role": "user", "content": "hi"}])
+    assert llm.rate_limited == 1 and "429" in llm.last_http_error and "secret-key" not in llm.last_http_error

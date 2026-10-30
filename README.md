@@ -74,7 +74,7 @@ Transfer statuses: `COMPLETED`, `FAILED` (debit rejected, nothing moved), `COMPE
 
 ## Recovery service (port 8000)
 
-Put your key in `.env` (never commit it): `LLM_API_KEY=...`. Model and endpoint: `LLM_BASE_URL`, `LLM_MODEL`.
+The AI is Google Gemini (`gemini-3.5-flash-lite`) through its OpenAI-compatible endpoint. Put your Gemini API key in `.env` (never commit it): `LLM_API_KEY=...`. Endpoint and model: `LLM_BASE_URL`, `LLM_MODEL`; `LLM_MIN_INTERVAL_S=4.5` keeps calls under the free tier's per-minute limit.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -123,7 +123,7 @@ docker run --rm --network ledgemind_default -e REDIS_ADDR=redis:6379 -v "%cd%\re
 Injected plans are never stored in memory. Every decision line records `injected`, `cached_tokens` and the `ablation` label.
 
 **Prompt (KV) caching**: the system prompt and examples are identical in every call, so providers that cache prompts
-(OpenAI, Groq and others) reuse that prefix. The planner records `usage.prompt_tokens_details.cached_tokens`
+(Gemini, OpenAI and others) reuse that prefix. The planner records `usage.prompt_tokens_details.cached_tokens`
 (0 when a provider does not report it); the benchmark reports `cached_tokens / prompt_tokens` as `cache_hit_pct`.
 
 ## Recovery

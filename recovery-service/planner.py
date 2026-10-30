@@ -1,6 +1,6 @@
 """Ask an LLM for one recovery action and parse it strictly.
 
-Works with any OpenAI-compatible chat API (Groq, OpenAI, Ollama, vLLM).
+Works with any OpenAI-compatible chat API (Gemini, OpenAI, Ollama, vLLM).
 """
 import json
 import threading
@@ -95,6 +95,8 @@ class OpenAICompatLLM:
         self._max_retries = max_retries
         self._last_call = 0.0
         self._lock = threading.Lock()
+        self.rate_limited = 0       # 429 replies seen (quota / rate limit); shown in /admin/stats
+        self.last_http_error = ""   # last non-200 reply, shortened (never contains the key)
         self.json_mode = True  # turned off automatically if the provider rejects response_format
 
     def _wait_turn(self) -> None:
@@ -103,6 +105,23 @@ class OpenAICompatLLM:
             if wait > 0:
                 time.sleep(wait)
             self._last_call = time.monotonic()
+
+    def ping(self) -> dict:
+        """One tiny call, no retries: is the provider accepting our calls right now? (quota check)"""
+        body = {"model": self.model, "messages": [{"role": "user", "content": "Reply with: ok"}],
+                "max_tokens": 64, "temperature": 0}
+        headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
+        self._wait_turn()
+        try:
+            r = self._http.post(self._url, json=body, headers=headers)
+        except httpx.HTTPError as e:
+            return {"ok": False, "status": 0, "error": f"network: {type(e).__name__}"}
+        if r.status_code == 200:
+            return {"ok": True, "status": 200}
+        if r.status_code == 429:
+            self.rate_limited += 1
+        return {"ok": False, "status": r.status_code, "error": r.text[:300],
+                "retry_after": r.headers.get("retry-after")}
 
     def complete(self, messages: list[dict]) -> LLMReply:
         body = {"model": self.model, "messages": messages, "temperature": 0, "max_tokens": self.max_tokens}
@@ -149,7 +168,9 @@ class OpenAICompatLLM:
                 if r.status_code in (401, 403):
                     raise LLMError(f"LLM rejected the API key (HTTP {r.status_code})")
                 last = f"HTTP {r.status_code}: {r.text[:200]}"
+                self.last_http_error = last
                 if r.status_code == 429:
+                    self.rate_limited += 1
                     try:
                         delay = max(delay, float(r.headers.get("retry-after", delay)))
                     except ValueError:

@@ -208,6 +208,11 @@ def cleanup_leftovers(since: datetime) -> int:
     return len(stuck)
 
 
+def recovery_stats() -> dict:
+    st, s = http("GET", f"{RECOVERY}/admin/stats")
+    return s if st == 200 and isinstance(s, dict) else {}
+
+
 def recovery_progress() -> tuple:
     """Changes whenever the recovery service does anything (reads a message, calls the AI, fails, executes)."""
     st, s = http("GET", f"{RECOVERY}/admin/stats")
@@ -254,6 +259,7 @@ def run_strategy(strategy: str, failures: list[dict], seed: int, args) -> tuple[
     started = datetime.now(timezone.utc) - timedelta(seconds=2)
     t0 = time.time()
     offset = decisions_count()
+    before = recovery_stats()
 
     ok("POST", f"{RAIL}/admin/faults", {"by_amount": {str(f["amount_paise"]): f["fault"] for f in failures}})
 
@@ -276,6 +282,9 @@ def run_strategy(strategy: str, failures: list[dict], seed: int, args) -> tuple[
 
     waited = wait_settled([s["saga_id"] for s in sent], args.max_wait, recovery != "off", args.idle_wait)
     duration = time.time() - t0
+    after = recovery_stats()
+    llm_429 = after.get("llm_rate_limited", 0) - before.get("llm_rate_limited", 0)
+    llm_errors = after.get("errors", 0) - before.get("errors", 0)
 
     decisions = {}
     for d in decisions_since(offset):
@@ -287,6 +296,15 @@ def run_strategy(strategy: str, failures: list[dict], seed: int, args) -> tuple[
         log(f"  {left} transfers still STUCK at the end (counted as unresolved, then escalated)")
 
     summary = summarize(strategy, seed, rows, duration, waited, args)
+    unresolved = summary["unresolved"]
+    summary["llm_429"], summary["llm_errors"] = llm_429, llm_errors
+    # An AI run that left transfers open while the provider was refusing calls measures the quota, not the method.
+    # Handling errors = AI calls that failed after all retries (those transfers were escalated or left open).
+    summary["valid"] = int(not (recovery != "off" and (llm_errors or (unresolved and llm_429))))
+    if not summary["valid"]:
+        log(f"  WARNING: INVALID RUN (do not use these numbers): the AI provider failed "
+            f"({llm_429} rate-limit replies, {llm_errors} transfers could not be handled). Last error: "
+            f"{after.get('llm_last_http_error', '')[:160]}")
     return rows, summary
 
 
@@ -467,6 +485,16 @@ def preflight() -> None:
     log(f"services up; recovery model = {h.get('llm_model')}, key set = {h.get('llm_key_set')}")
 
 
+def check_llm() -> None:
+    st, res = http("POST", f"{RECOVERY}/admin/llm_check", timeout=60)
+    if st == 200 and res.get("ok"):
+        log("AI provider check: OK")
+        return
+    detail = (res or {}).get("error") or res
+    hint = " (quota or rate limit used up: wait for it to reset, or switch provider)" if (res or {}).get("status") == 429 else ""
+    raise SystemExit(f"AI provider check FAILED{hint}: HTTP {(res or {}).get('status', st)} {str(detail)[:300]}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--n", type=int, default=100, help="number of failures (multiple of 5)")
@@ -499,6 +527,10 @@ def main() -> None:
 
     os.makedirs(args.out, exist_ok=True)
     preflight()
+
+    if not args.throughput_only and any(STRATEGIES[s.strip()][1] != "off" for s in args.strategies.split(",")
+                                        if s.strip() in STRATEGIES):
+        check_llm()
 
     if not args.throughput_only:
         failures = plan_failures(args.n, args.seed)

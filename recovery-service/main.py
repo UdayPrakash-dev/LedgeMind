@@ -118,9 +118,18 @@ def create_app(settings: Settings | None = None, llm: LLM | None = None,
         log.info("ablation set to %s", ablation.get().label())
         return get_ablation()
 
+    @app.post("/admin/llm_check")
+    def llm_check():
+        """One tiny AI call: the benchmark runs this first, so a used-up quota stops it before it starts."""
+        if not hasattr(model, "ping"):
+            return {"ok": True, "status": 200, "note": "test model"}
+        return model.ping()
+
     @app.get("/admin/stats")
     def stats():
-        return {"strategy": strategy.get(), "model": model.model, **consumer.stats.snapshot()}
+        return {"strategy": strategy.get(), "model": model.model, **consumer.stats.snapshot(),
+                "llm_rate_limited": getattr(model, "rate_limited", 0),
+                "llm_last_http_error": getattr(model, "last_http_error", "")}
 
     @app.get("/admin/memory")
     def memory_list():

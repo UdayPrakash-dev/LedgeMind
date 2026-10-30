@@ -11,3 +11,5 @@ paper/*.pdf
 .pytest_cache/
 recovery-service/tests/.tmp-*
 *.tgz
+.env.*
+!.env.example
