@@ -246,3 +246,24 @@ func TestBadRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestFaultByAmountIsUsedOnceAndBeatsQueue(t *testing.T) {
+	_, srv, _ := newTestRail(t, fastConfig())
+	resp, err := http.Post(srv.URL+"/admin/faults", "application/json",
+		strings.NewReader(`{"modes":["duplicate"],"by_amount":{"1000":"reject"}}`))
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("queue: %v %v", resp, err)
+	}
+	// pay() always sends 1000 paise: first payment of 1000 gets the by-amount fault...
+	if s, _ := pay(t, srv, "a1", "", nil); s != 422 {
+		t.Fatalf("by-amount fault: %d, want 422", s)
+	}
+	// ...a second, different payment of 1000 (e.g. a reroute) does not; it gets the queue.
+	if s, _ := pay(t, srv, "a2", "", nil); s != 409 {
+		t.Fatalf("after by-amount used: %d, want 409 from queue", s)
+	}
+	bad, _ := http.Post(srv.URL+"/admin/faults", "application/json", strings.NewReader(`{"by_amount":{"x":"reject"}}`))
+	if bad.StatusCode != 400 {
+		t.Fatalf("bad amount accepted: %d", bad.StatusCode)
+	}
+}

@@ -105,6 +105,7 @@ type Rail struct {
 	rng      *rand.Rand
 	seq      int64
 	queue    []Mode
+	byAmount map[int64]Mode // amount -> fault for the FIRST payment with that amount (benchmark)
 	payments map[string]*Payment
 	calls    []CallLog
 	logOut   io.Writer // one JSON line per call; may be nil
@@ -123,6 +124,7 @@ func (r *Rail) reset(cfg Config) {
 	r.rng = rand.New(rand.NewSource(cfg.Seed))
 	r.seq = 0
 	r.queue = nil
+	r.byAmount = map[int64]Mode{}
 	r.payments = map[string]*Payment{}
 	r.calls = nil
 }
@@ -171,7 +173,7 @@ func (r *Rail) handlePay(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	mode, source := r.chooseMode(Mode(req.Header.Get("X-Fault-Mode")))
+	mode, source := r.chooseMode(Mode(req.Header.Get("X-Fault-Mode")), body.Amount)
 	state := StatePaid
 	switch mode {
 	case ModeReject:
@@ -223,9 +225,15 @@ func (r *Rail) handlePay(w http.ResponseWriter, req *http.Request) {
 }
 
 // chooseMode: header beats queue beats seeded random. Caller holds r.mu.
-func (r *Rail) chooseMode(header Mode) (Mode, string) {
+func (r *Rail) chooseMode(header Mode, amount int64) (Mode, string) {
 	if header != "" && validMode(header) {
 		return header, "header"
+	}
+	// By amount: used once, so later payments for the same transfer (e.g. a reroute)
+	// do not get the fault again and do not shift the faults of other transfers.
+	if m, ok := r.byAmount[amount]; ok {
+		delete(r.byAmount, amount)
+		return m, "amount"
 	}
 	if len(r.queue) > 0 {
 		m := r.queue[0]
@@ -297,7 +305,7 @@ func (r *Rail) handleGetPayment(w http.ResponseWriter, req *http.Request) {
 func (r *Rail) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"config": r.cfg, "queued_faults": r.queue, "calls_so_far": r.seq})
+	writeJSON(w, 200, map[string]any{"config": r.cfg, "queued_faults": r.queue, "faults_by_amount": len(r.byAmount), "calls_so_far": r.seq})
 }
 
 // POST /admin/config replaces the config AND resets all state, so a run starts clean.
@@ -325,10 +333,14 @@ func (r *Rail) handleSetConfig(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, 200, map[string]any{"config": cfg, "reset": true})
 }
 
-// POST /admin/faults {"modes":["timeout","none","reject"]}: the next payments get these modes in order.
+// POST /admin/faults
+//
+//	{"modes":["timeout","none","reject"]}  the next payments get these modes in order
+//	{"by_amount":{"1001":"timeout"}}        the first payment of exactly 1001 paise gets "timeout"
 func (r *Rail) handleQueueFaults(w http.ResponseWriter, req *http.Request) {
 	var body struct {
-		Modes []Mode `json:"modes"`
+		Modes    []Mode          `json:"modes"`
+		ByAmount map[string]Mode `json:"by_amount"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -340,11 +352,23 @@ func (r *Rail) handleQueueFaults(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	amounts := map[int64]Mode{}
+	for k, m := range body.ByAmount {
+		a, err := strconv.ParseInt(k, 10, 64)
+		if err != nil || a <= 0 || !validMode(m) {
+			writeJSON(w, 400, map[string]string{"error": "by_amount needs positive integer amounts and known modes: " + k})
+			return
+		}
+		amounts[a] = m
+	}
 	r.mu.Lock()
 	r.queue = append(r.queue, body.Modes...)
-	n := len(r.queue)
+	for a, m := range amounts {
+		r.byAmount[a] = m
+	}
+	n, na := len(r.queue), len(r.byAmount)
 	r.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"queued": n})
+	writeJSON(w, 200, map[string]any{"queued": n, "by_amount": na})
 }
 
 func (r *Rail) handleReset(w http.ResponseWriter, _ *http.Request) {

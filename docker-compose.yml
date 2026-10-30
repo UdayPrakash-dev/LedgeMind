@@ -113,6 +113,29 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ---------------------------------------------------------------
+  # Benchmark (only runs on demand: bench.bat / make bench)
+  # ---------------------------------------------------------------
+  bench:
+    image: python:3.12-slim
+    profiles: ["bench"]
+    working_dir: /bench
+    entrypoint: ["python", "-u", "run.py"]
+    environment:
+      WALLET_URL: http://wallet-service:8080
+      RAIL_URL: http://fake-rail:9000
+      RECOVERY_URL: http://recovery-service:8000
+      DECISIONS_PATH: /bench/results/decisions.jsonl   # written by recovery-service (same folder)
+    volumes:
+      - ./bench:/bench
+    depends_on:
+      wallet-service:
+        condition: service_started
+      recovery-service:
+        condition: service_started
+      fake-rail:
+        condition: service_started
+
 volumes:
   pgdata:
   redisdata:

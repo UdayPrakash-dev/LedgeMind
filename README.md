@@ -25,7 +25,8 @@ recovery-service/      Python: reads stuck-sagas, asks the AI for one action, ap
   memory.py            resolution memory in Redis (key: service|step|error type|rail state)
   decisions.py         one JSON line per decision -> bench/results/decisions.jsonl
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
-bench/                 benchmark harness (Day 8)
+bench/                 benchmark harness: run.py (stdlib only), results/ (CSV output, not in Git)
+bench.bat / Makefile   one command for the whole experiment
 paper/                 LaTeX source
 ```
 
@@ -173,6 +174,29 @@ How the fault for each payment is chosen (first match wins):
 | `POST /admin/reset` | clear payments, logs and queue; restart the seed |
 | `GET /admin/calls?limit=50` | call log (also printed as JSON lines in `docker compose logs fake-rail`) |
 | `GET /admin/stats` | counts by mode and state |
+
+## Benchmark
+
+```cmd
+bench.bat --n 10 --seed 1      &REM smoke test: 2 failures of each type, short load test
+bench.bat --n 100 --seed 1     &REM full run (Linux/VM: make bench SEED=1)
+```
+
+For each strategy (`static`, `retry`, `llm_no_verifier`, `llm_verified_memory`) the harness:
+resets the rail with the seed, sets the wallet policy and recovery strategy, clears memory,
+assigns each failure's fault to a unique amount (so AI actions like reroute cannot shift later faults),
+sends the transfers, waits for partial reversals, reconciles, waits for recovery, then scores every
+transfer against the rail's ground truth and `/admin/invariants`. Leftover STUCK transfers are
+escalated so the next strategy never sees them.
+
+| File | Contents |
+| --- | --- |
+| `failures_<seed>.csv` | the plan and correct resolution, written before anything runs |
+| `run_<seed>_<strategy>.csv` | per failure: rail truth, expected, final status, action, resolved, unsafe, escalated, time to resolve, LLM calls, memory hit, verifier rejections |
+| `summary.csv`, `summary_by_fault.csv` | per strategy (and per fault), appended across runs |
+| `throughput_<seed>.csv` | fault-free transfers at a fixed rate with the recovery service idle vs busy |
+
+`resolved` = final status equals the expected one and no invariant violations. `unsafe` = a violation an action caused (money paid out twice, double rail payment, money created).
 
 ## Useful commands
 
