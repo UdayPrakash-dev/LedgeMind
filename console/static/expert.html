@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LedgeMind console (expert)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #e7ecf1; --panel: #ffffff; --panel-2: #f5f7fa; --rule: #d3dae2; --rule-2: #e6ebf0;
+  --ink: #15202b; --ink-2: #4b5967; --muted: #7c8996;
+  --primary: #1f4e8c; --primary-ink: #ffffff; --primary-soft: #e3ecf8;
+  --good: #1d7f46; --good-soft: #e3f3e9; --warn: #a8670f; --warn-soft: #fbf0dc; --bad: #bf312b; --bad-soft: #fbe5e3;
+  --src-bank: #2a78d6; --src-ai: #6250d6; --src-bench: #148a62; --src-console: #6b7785;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --r-sm: 4px; --r-md: 7px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---------- layout ---------- */
+.app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+.main { display: grid; grid-template-columns: 330px minmax(0, 1fr) 390px; gap: 12px; padding: 12px; min-height: 0; }
+.col { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.center { overflow: hidden; }
+@media (max-width: 1250px) { .main { grid-template-columns: 300px minmax(0, 1fr); } .right { grid-column: 1 / -1; } .app { height: auto; } .center { min-height: 70vh; } }
+@media (max-width: 780px) { .counters { grid-template-columns: repeat(2, 1fr); } .main { grid-template-columns: 1fr; padding: 8px; } }
+
+/* ---------- top bar ---------- */
+.top { background: var(--panel); border-bottom: 1px solid var(--rule); padding: 10px 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.brand { display: flex; flex-direction: column; margin-right: 6px; }
+.brand b { font-size: 17px; letter-spacing: -0.01em; }
+.brand span { color: var(--muted); font-size: 12px; }
+.services { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+.svc { display: flex; align-items: center; gap: 8px; border: 1px solid var(--rule); border-radius: var(--r-md); padding: 5px 6px 5px 10px; background: var(--panel-2); }
+.svc .name { font-weight: 600; font-size: 13px; }
+.svc .sub { color: var(--muted); font-size: 11.5px; display: block; line-height: 1.2; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+.model { color: var(--ink-2); font-size: 12.5px; text-align: right; }
+.model b { color: var(--ink); }
+
+/* ---------- panels ---------- */
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-md); }
+.panel > h2 { font-size: 13.5px; margin: 0; padding: 10px 14px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.panel > h2 small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.panel .body { padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label, .field > .lbl { font-size: 12px; color: var(--ink-2); font-weight: 500; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row > * { flex: 1; }
+
+.seg { display: flex; border: 1px solid var(--rule); border-radius: var(--r-sm); overflow: hidden; }
+.seg button { flex: 1; border: 0; background: var(--panel); padding: 6px 4px; font-size: 12.5px; cursor: pointer; border-right: 1px solid var(--rule); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--primary); color: var(--primary-ink); font-weight: 600; }
+
+.btn { border: 1px solid var(--rule); background: var(--panel); border-radius: var(--r-sm); padding: 6px 10px; cursor: pointer; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--bad); }
+.btn.confirm { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.small { padding: 3px 7px; font-size: 11.5px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+input[type=number], select, input[type=text] { border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 5px 7px; background: var(--panel); min-width: 0; width: 100%; }
+input[type=range] { width: 100%; accent-color: var(--primary); }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+.check input { margin-top: 3px; accent-color: var(--primary); }
+.check small { display: block; color: var(--muted); font-size: 11.5px; }
+.pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: var(--panel-2); color: var(--ink-2); border: 1px solid var(--rule-2); white-space: nowrap; }
+.pill.good { background: var(--good-soft); color: var(--good); border-color: transparent; }
+.pill.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.pill.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.pill.info { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12.5px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; }
+.mono { font-family: var(--mono); font-size: 12px; }
+
+/* ---------- counters ---------- */
+.counters { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--r-md); overflow: hidden; }
+.counter { background: var(--panel); padding: 8px 11px; }
+.counter b { display: block; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.counter span { color: var(--muted); font-size: 11.5px; }
+
+/* ---------- center: tabs, feed ---------- */
+.center .panel { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.tabs { display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--rule); align-items: flex-end; }
+.tabs button { border: 0; background: none; padding: 7px 12px; cursor: pointer; font-weight: 500; color: var(--ink-2); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--primary); font-weight: 600; }
+.tabs .spacer { flex: 1; }
+.tabpane { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.tabpane.active { display: flex; }
+.toolbar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--rule-2); flex-wrap: wrap; font-size: 12.5px; }
+.toolbar .srcs { display: flex; gap: 6px; flex-wrap: wrap; }
+.srcbtn { border: 1px solid var(--rule); background: var(--panel); border-radius: 999px; padding: 2px 9px 2px 7px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.srcbtn i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.srcbtn[aria-pressed="false"] { opacity: .45; }
+.feed { flex: 1; overflow: auto; font-family: var(--mono); font-size: 12px; padding: 4px 0; }
+.line { display: grid; grid-template-columns: 62px 64px 1fr; gap: 10px; padding: 3px 12px 3px 10px; border-left: 3px solid transparent; line-height: 1.5; }
+.line:hover { background: var(--panel-2); }
+.line .t { color: var(--muted); }
+.line .s { font-weight: 500; }
+.line .x { white-space: pre-wrap; word-break: break-word; }
+.line.bank { border-left-color: var(--src-bank); } .line.bank .s { color: var(--src-bank); }
+.line.ai { border-left-color: var(--src-ai); } .line.ai .s { color: var(--src-ai); }
+.line.bench { border-left-color: var(--src-bench); } .line.bench .s { color: var(--src-bench); }
+.line.console { border-left-color: var(--src-console); } .line.console .s { color: var(--src-console); }
+.line.lv-good .x { color: var(--good); } .line.lv-bad .x { color: var(--bad); } .line.lv-warn .x { color: var(--warn); }
+.line a { color: inherit; text-decoration: underline; text-decoration-color: var(--rule); cursor: pointer; }
+.empty { color: var(--muted); padding: 24px; text-align: center; font-family: var(--sans); font-size: 13px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 11.5px; padding: 6px 8px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--panel); }
+td { padding: 5px 8px; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.click { cursor: pointer; } tr.click:hover td { background: var(--panel-2); }
+.scroll { flex: 1; overflow: auto; }
+pre.logs { margin: 0; flex: 1; overflow: auto; font-family: var(--mono); font-size: 11.5px; padding: 10px 12px; background: #0f1720; color: #d6dde5; white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- right: results ---------- */
+.right table { font-size: 12px; }
+.right td, .right th { padding: 4px 6px; }
+.fig { border: 1px solid var(--rule-2); border-radius: var(--r-sm); width: 100%; cursor: zoom-in; background: #fff; }
+.mem { display: flex; flex-direction: column; gap: 6px; }
+.mem div { border: 1px solid var(--rule-2); border-radius: var(--r-sm); padding: 6px 8px; font-size: 12px; }
+.mem code { font-family: var(--mono); font-size: 11px; color: var(--ink-2); word-break: break-all; }
+
+/* ---------- transfer drawer ---------- */
+.drawer { position: fixed; inset: 0 0 0 auto; width: min(640px, 100vw); background: var(--panel); border-left: 1px solid var(--rule); box-shadow: -10px 0 30px rgba(21, 32, 43, .12); transform: translateX(105%); transition: transform .18s ease-out; display: flex; flex-direction: column; z-index: 10; }
+.drawer.open { transform: none; }
+.drawer header { padding: 14px 18px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.drawer header h3 { margin: 0; font-size: 16px; }
+.drawer .content { overflow: auto; padding: 14px 18px 30px; display: flex; flex-direction: column; gap: 18px; }
+.drawer h4 { margin: 0 0 6px; font-size: 13px; }
+.track { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; position: relative; margin: 6px 0 2px; }
+.track .stp { text-align: center; position: relative; padding-top: 26px; font-size: 12px; }
+.track .stp::before { content: ""; position: absolute; top: 10px; left: 0; right: 0; height: 2px; background: var(--rule); }
+.track .stp:first-child::before { left: 50%; } .track .stp:last-child::before { right: 50%; }
+.track .stp i { position: absolute; top: 3px; left: calc(50% - 8px); width: 16px; height: 16px; border-radius: 50%; background: var(--panel); border: 2px solid var(--rule); z-index: 1; }
+.track .stp.ok i { background: var(--good); border-color: var(--good); }
+.track .stp.error i { background: var(--bad); border-color: var(--bad); }
+.track .stp.current i { box-shadow: 0 0 0 4px var(--warn-soft); border-color: var(--warn); }
+.track .stp small { display: block; color: var(--muted); }
+.hist { display: flex; flex-direction: column; gap: 0; }
+.hist div { display: grid; grid-template-columns: 70px 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--rule-2); font-size: 12.5px; }
+.hist .when { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.verdict { border-radius: var(--r-sm); padding: 8px 10px; font-size: 12.5px; }
+.verdict.good { background: var(--good-soft); } .verdict.bad { background: var(--bad-soft); }
+
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 8px 14px; border-radius: var(--r-md); font-size: 13px; z-index: 20; display: none; max-width: 90vw; }
+.lightbox { position: fixed; inset: 0; background: rgba(15, 23, 32, .75); display: none; align-items: center; justify-content: center; z-index: 30; padding: 24px; cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: 100%; background: #fff; border-radius: var(--r-md); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><b>LedgeMind console</b><span>AI-guided recovery for stuck wallet transfers</span></div>
+    <div class="services" id="services"></div>
+    <div class="model" id="model">AI model <b>…</b></div>
+    <a class="btn" href="/" style="text-decoration:none">Simple view</a>
+  </header>
+
+  <div class="main">
+    <!-- ================= left: controls ================= -->
+    <aside class="col">
+      <section class="panel">
+        <h2>How failures are handled</h2>
+        <div class="body">
+          <div class="field">
+            <span class="lbl">Wallet policy: what a new transfer does when the rail fails</span>
+            <div class="seg" id="policy">
+              <button data-v="refund" title="Refund the sender at once (baseline 1)">Refund</button>
+              <button data-v="retry" title="Retry 1s, 2s, 4s, then mark STUCK (baseline 2)">Retry</button>
+              <button data-v="escalate" title="Mark STUCK at once and let the recovery service decide">Hand to recovery</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="lbl">Recovery service: who fixes STUCK transfers</span>
+            <div class="seg" id="strategy">
+              <button data-v="off">Nobody</button>
+              <button data-v="llm_no_verifier">AI only</button>
+              <button data-v="llm_verified_memory">AI + verifier + memory</button>
+            </div>
+          </div>
+          <p class="hint">For the AI to get a transfer, use "Hand to recovery". Refund and Retry are the baselines.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Experiment switches <small id="abl-label">main</small></h2>
+        <div class="body">
+          <label class="check"><input type="checkbox" id="abl-hide"><span>Hide the rail from the AI<small>Experiment B. The verifier still sees the real rail state.</small></span></label>
+          <div class="field">
+            <label for="abl-rate">Replace AI answers with a wrong action: <b id="abl-rate-v">0%</b></label>
+            <input type="range" id="abl-rate" min="0" max="50" step="5" value="0">
+            <span class="hint">Experiment C. Seeded, so the same seed injects the same errors.</span>
+          </div>
+          <label class="check"><input type="checkbox" id="abl-mem" checked><span>Use resolution memory<small>Off: every transfer goes to the AI.</small></span></label>
+          <div class="row"><div class="field"><label for="abl-seed">Seed</label><input type="number" id="abl-seed" value="1" min="0"></div></div>
+          <div class="row"><button class="btn primary" id="abl-apply">Apply switches</button><button class="btn" id="abl-reset">Turn all off</button></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Send failing transfers</h2>
+        <div class="body">
+          <div class="field">
+            <label for="demo-fault">What the payment rail does</label>
+            <select id="demo-fault">
+              <option value="timeout">Timeout: rail paid, reply lost (correct: complete)</option>
+              <option value="duplicate">Duplicate: 409 but paid (correct: complete)</option>
+              <option value="reject">Reject: 422 not paid (correct: refund)</option>
+              <option value="partial">Partial: paid, reversed 3 s later (correct: refund)</option>
+              <option value="unknown">Unknown: 500, hidden outcome (correct: check, then decide)</option>
+              <option value="none">No fault: normal payment</option>
+            </select>
+          </div>
+          <div class="row">
+            <div class="field"><label for="demo-count">How many</label><input type="number" id="demo-count" value="1" min="1" max="20"></div>
+            <button class="btn primary" id="demo-send" style="align-self:flex-end">Send transfers</button>
+          </div>
+          <div class="row">
+            <button class="btn" id="act-reconcile" title="Find completed transfers whose payment the rail later reversed">Reconcile now</button>
+            <button class="btn" id="act-sweep" title="Recovery service handles every STUCK transfer now">Recover all stuck</button>
+          </div>
+          <div class="row">
+            <button class="btn" id="act-invariants" title="Money conserved, ledger matches the rail">Check the books</button>
+            <button class="btn danger" id="act-memclear">Clear AI memory</button>
+          </div>
+          <div class="row"><button class="btn" id="act-railreset" title="Clears rail payments, faults and call log">Reset payment rail</button></div>
+          <div id="inv-result"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Benchmark <small id="bench-state">idle</small></h2>
+        <div class="body">
+          <div class="row">
+            <div class="field"><label for="b-n">Failures</label>
+              <select id="b-n"><option>10</option><option>50</option><option selected>100</option></select></div>
+            <div class="field"><label for="b-seed">Seed</label><input type="number" id="b-seed" value="1" min="0"></div>
+          </div>
+          <div class="field"><span class="lbl">Strategies</span>
+            <label class="check"><input type="checkbox" class="b-st" value="static" checked><span>Static refund</span></label>
+            <label class="check"><input type="checkbox" class="b-st" value="retry" checked><span>Retry with backoff</span></label>
+            <label class="check"><input type="checkbox" class="b-st" value="llm_no_verifier" checked><span>AI only</span></label>
+            <label class="check"><input type="checkbox" class="b-st" value="llm_verified_memory" checked><span>AI + verifier + memory</span></label>
+          </div>
+          <div class="field"><span class="lbl">Experiment</span>
+            <label class="check"><input type="checkbox" id="b-hide"><span>Hide rail from the AI</span></label>
+            <div class="row"><div class="field"><label for="b-inject">Wrong answers injected</label>
+              <select id="b-inject"><option value="0">none</option><option value="0.1">10%</option><option value="0.2">20%</option><option value="0.3">30%</option></select></div></div>
+            <label class="check"><input type="checkbox" id="b-nomem"><span>Memory off</span></label>
+            <label class="check"><input type="checkbox" id="b-tp"><span>Include speed test (adds 1 min)</span></label>
+          </div>
+          <p class="hint" id="b-cost"></p>
+          <div class="row"><button class="btn primary" id="b-start">Start benchmark</button><button class="btn danger" id="b-stop" disabled>Stop</button></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- ================= center: live ================= -->
+    <main class="col center">
+      <div class="counters" id="counters"></div>
+      <section class="panel">
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected="true" data-tab="feed">Live feed</button>
+          <button role="tab" aria-selected="false" data-tab="transfers">Transfers</button>
+          <button role="tab" aria-selected="false" data-tab="logs">Container logs</button>
+          <span class="spacer"></span>
+        </div>
+
+        <div class="tabpane active" id="tab-feed">
+          <div class="toolbar">
+            <div class="srcs" id="srcs"></div>
+            <span style="flex:1"></span>
+            <label class="check"><input type="checkbox" id="follow" checked><span>Follow new lines</span></label>
+            <button class="btn small" id="feed-clear">Clear view</button>
+          </div>
+          <div class="feed" id="feed"><div class="empty">Waiting for activity. Send a failing transfer on the left to see the system react.</div></div>
+        </div>
+
+        <div class="tabpane" id="tab-transfers">
+          <div class="toolbar">
+            <label>Status <select id="t-status" style="width:auto"><option value="">all</option><option>STUCK</option><option>COMPLETED</option><option>COMPENSATED</option><option>ESCALATED</option><option>FAILED</option><option>RUNNING</option></select></label>
+            <span class="hint">Most recent 100. Click a transfer for its full story.</span>
+          </div>
+          <div class="scroll"><table><thead><tr><th>Transfer</th><th class="num">Amount</th><th>Status</th><th>Step</th><th>Policy</th><th>Recovery actions</th><th>Created</th></tr></thead><tbody id="t-body"></tbody></table></div>
+        </div>
+
+        <div class="tabpane" id="tab-logs">
+          <div class="toolbar">
+            <label>Container <select id="l-name" style="width:auto"></select></label>
+            <label class="check"><input type="checkbox" id="l-auto" checked><span>Refresh every 3 s</span></label>
+            <button class="btn small" id="l-refresh">Refresh</button>
+          </div>
+          <pre class="logs" id="l-text">Select a container.</pre>
+        </div>
+      </section>
+    </main>
+
+    <!-- ================= right: results ================= -->
+    <aside class="col right">
+      <section class="panel">
+        <h2>Results <small id="res-meta"></small></h2>
+        <div class="body">
+          <div class="row"><button class="btn" id="res-refresh">Reload results</button><button class="btn primary" id="res-agg">Rebuild tables &amp; figures</button></div>
+          <div id="res-main"></div>
+        </div>
+      </section>
+      <section class="panel"><h2>Experiments <small>seed 1</small></h2><div class="body" id="res-abl"></div></section>
+      <section class="panel"><h2>Per fault <small>resolved, 3 seeds</small></h2><div class="body" id="res-fault"></div></section>
+      <section class="panel"><h2>Speed of normal transfers</h2><div class="body" id="res-tp"></div></section>
+      <section class="panel"><h2>Figures</h2><div class="body" id="res-figs"></div></section>
+      <section class="panel"><h2>Recent runs</h2><div class="body" id="res-recent"></div></section>
+      <section class="panel"><h2>AI memory <small id="mem-count"></small></h2><div class="body"><div class="mem" id="mem"></div></div></section>
+    </aside>
+  </div>
+</div>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <header><div><h3 id="d-title">Transfer</h3><div class="hint mono" id="d-id"></div></div><button class="btn" id="d-close">Close</button></header>
+  <div class="content" id="d-content"></div>
+</aside>
+<div class="toast" id="toast"></div>
+<div class="lightbox" id="lightbox"><img alt=""></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const SVC = {"ledgemind-wallet":"Wallet","ledgemind-rail":"Payment rail","ledgemind-recovery":"Recovery","ledgemind-postgres":"Postgres","ledgemind-redis":"Redis"};
+const STRAT = {off:"Nobody", llm_no_verifier:"AI only", llm_verified_memory:"AI + verifier + memory"};
+const SOURCES = {bank:"Bank", ai:"AI", bench:"Benchmark", console:"You"};
+const SRC_NAME = {llm: "AI", llm_retry: "AI, 2nd try", memory: "Memory", verifier_escalation: "Verifier"};
+const SHORT = {"AI + verifier + memory": "AI + verifier + mem.", "AI + verifier (no memory)": "AI + verifier, no mem.", "Retry with backoff": "Retry", "Static refund": "Static"};
+const STATUS_TONE = {COMPLETED:"good", COMPENSATED:"good", FAILED:"bad", STUCK:"warn", ESCALATED:"warn", RUNNING:"info"};
+let state = {}, feedAfter = 0, srcOn = {bank:true, ai:true, bench:true, console:true};
+
+async function api(path, opts = {}) {
+  const o = {method: opts.method || "GET", headers: {"Content-Type": "application/json"}};
+  if (opts.body !== undefined) { o.method = opts.method || "POST"; o.body = JSON.stringify(opts.body); }
+  const r = await fetch(path, o);
+  let data; try { data = await r.json(); } catch { data = {}; }
+  if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
+  return data;
+}
+function toast(msg, ms = 3000) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
+async function act(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } catch (e) { toast(e.message, 5000); } finally { btn.disabled = false; }
+}
+function confirmClick(btn, label, fn) {  // two-step confirm without browser dialogs
+  if (btn.dataset.armed) { delete btn.dataset.armed; btn.classList.remove("confirm"); btn.textContent = btn.dataset.label; fn(); return; }
+  btn.dataset.label = btn.textContent; btn.dataset.armed = 1; btn.classList.add("confirm"); btn.textContent = label;
+  setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.classList.remove("confirm"); btn.textContent = btn.dataset.label; } }, 4000);
+}
+
+/* ---------------- status ---------------- */
+function tone(h) { return h === "ok" ? "ok" : (h === "down" || h === "db unreachable") ? "bad" : "warn"; }
+function renderStatus() {
+  const s = state, el = $("#services");
+  el.innerHTML = Object.keys(SVC).map(n => {
+    const h = (s.services?.[n] || {}).health || "unknown", c = s.containers?.[n];
+    return `<div class="svc"><span class="dot ${tone(h)}"></span><span><span class="name">${SVC[n]}</span><span class="sub">${esc(h === "ok" ? (c?.status || "healthy") : (c?.status || h))}</span></span>
+      <button class="btn small" data-restart="${n}">Restart</button><button class="btn small" data-logs="${n}">Logs</button></div>`;
+  }).join("");
+  const rec = s.recovery || {};
+  $("#model").innerHTML = `AI model <b>${esc(rec.llm_model || "?")}</b><br>${rec.llm_key_set ? "API key set" : "<span style='color:var(--bad)'>no API key</span>"}`;
+  $$("#policy button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === s.policy));
+  $$("#strategy button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === rec.strategy));
+  const ab = s.ablation || {};
+  $("#abl-label").textContent = ab.label || "?";
+  if (!document.activeElement?.closest?.("#abl-apply, #abl-hide, #abl-rate, #abl-mem, #abl-seed") && !state._ablDirty) {
+    $("#abl-hide").checked = !!ab.hide_rail; $("#abl-rate").value = Math.round((ab.inject_rate || 0) * 100);
+    $("#abl-rate-v").textContent = $("#abl-rate").value + "%"; $("#abl-mem").checked = ab.use_memory !== false; $("#abl-seed").value = ab.seed ?? 1;
+  }
+  const st = s.stats || {}, rs = s.rail_stats || {};
+  const C = [["AI calls", st.llm_calls], ["Memory hits", st.memory_hits], ["Verifier approved", st.verifier_approved],
+             ["Verifier rejected", st.verifier_rejected], ["Actions executed", st.executed], ["Escalated by verifier", st.verifier_escalations],
+             ["Injected errors", st.injected_errors], ["Injected blocked", st.injected_blocked], ["Rail calls", rs.calls], ["Errors", st.errors]];
+  $("#counters").innerHTML = C.map(([k, v]) => `<div class="counter"><b>${v ?? "–"}</b><span>${k}</span></div>`).join("");
+  const b = s.bench || {};
+  $("#bench-state").textContent = b.running ? `running ${b.seconds}s` : (b.exit_code === null || b.exit_code === undefined ? "idle" : `last run exit ${b.exit_code}`);
+  $("#b-start").disabled = !!b.running; $("#b-stop").disabled = !b.running; $("#demo-send").disabled = !!b.running;
+  if (state._wasRunning && !b.running) loadResults();
+  state._wasRunning = b.running;
+}
+async function pollStatus() {
+  try { const s = await api("/api/status"); s._ablDirty = state._ablDirty; s._wasRunning = state._wasRunning; state = s; renderStatus(); }
+  catch (e) { $("#services").innerHTML = `<span class="pill bad">console cannot reach the services: ${esc(e.message)}</span>`; }
+}
+$("#services").addEventListener("click", e => {
+  const r = e.target.closest("[data-restart]"), l = e.target.closest("[data-logs]");
+  if (r) confirmClick(r, "Confirm", () => act(r, async () => { await api(`/api/containers/${r.dataset.restart}/restart`, {body: {}}); toast(`${SVC[r.dataset.restart]} restarted`); pollStatus(); }));
+  if (l) { $("#l-name").value = l.dataset.logs; selectTab("logs"); loadLogs(); }
+});
+
+/* ---------------- controls ---------------- */
+$("#policy").addEventListener("click", e => { const b = e.target.closest("button"); if (b) act(b, async () => { await api("/api/proxy/wallet/admin/policy", {body: {policy: b.dataset.v}}); pollStatus(); }); });
+$("#strategy").addEventListener("click", e => { const b = e.target.closest("button"); if (b) act(b, async () => { await api("/api/proxy/recovery/admin/strategy", {body: {strategy: b.dataset.v}}); pollStatus(); }); });
+["#abl-hide", "#abl-rate", "#abl-mem", "#abl-seed"].forEach(id => $(id).addEventListener("input", () => { state._ablDirty = true; $("#abl-rate-v").textContent = $("#abl-rate").value + "%"; }));
+$("#abl-apply").onclick = e => act(e.target, async () => {
+  const r = await api("/api/proxy/recovery/admin/ablation", {body: {hide_rail: $("#abl-hide").checked, inject_rate: +$("#abl-rate").value / 100, use_memory: $("#abl-mem").checked, seed: +$("#abl-seed").value}});
+  state._ablDirty = false; toast(`Experiment switches: ${r.label}`); pollStatus();
+});
+$("#abl-reset").onclick = e => act(e.target, async () => { await api("/api/proxy/recovery/admin/ablation", {body: {}}); state._ablDirty = false; pollStatus(); });
+$("#demo-send").onclick = e => act(e.target, async () => {
+  if (state.recovery?.strategy === "off" && state.policy === "escalate") toast("Recovery is set to Nobody: the transfers will stay STUCK", 4000);
+  const r = await api("/api/demo/transfer", {body: {fault: $("#demo-fault").value, count: +$("#demo-count").value}});
+  toast(`Sent ${r.transfers.length} transfer(s)`);
+});
+$("#act-reconcile").onclick = e => act(e.target, async () => { const r = await api("/api/proxy/wallet/admin/reconcile", {body: {}}); toast(`${(r.flagged || []).length} reversed payment(s) flagged`); });
+$("#act-sweep").onclick = e => act(e.target, async () => { const r = await api("/api/proxy/recovery/admin/sweep", {body: {}}); toast(`Stuck found ${r.stuck_found}, handled ${r.handled}, failed ${r.failed}`, 4000); });
+$("#act-invariants").onclick = e => act(e.target, async () => {
+  const r = await api("/api/proxy/wallet/admin/invariants");
+  const kinds = r.violations_by_kind || {};
+  $("#inv-result").innerHTML = r.ok ? `<div class="verdict good"><b>Books are clean.</b> ${r.sagas ?? ""} transfers checked, money conserved, ledger matches the rail.</div>`
+    : `<div class="verdict bad"><b>${(r.violations || []).length} problem(s):</b> ${Object.entries(kinds).map(([k, v]) => `${esc(k)} ×${v}`).join(", ")}<br><span class="hint">Old benchmark runs (static refund) leave these on purpose.</span></div>`;
+});
+$("#act-memclear").onclick = e => confirmClick(e.target, "Confirm clear", () => act(e.target, async () => { const r = await api("/api/proxy/recovery/admin/memory/clear", {body: {}}); toast(`${r.deleted} memory entries cleared`); loadMemory(); }));
+$("#act-railreset").onclick = e => confirmClick(e.target, "Confirm reset", () => act(e.target, async () => { await api("/api/proxy/rail/admin/reset", {body: {}}); toast("Payment rail reset"); }));
+
+function benchCost() {
+  const n = +$("#b-n").value, st = $$(".b-st:checked").map(c => c.value);
+  const calls = (st.includes("llm_no_verifier") ? n : 0) + (st.includes("llm_verified_memory") ? ($("#b-nomem").checked ? n : Math.ceil(n * .1) + 2) : 0);
+  $("#b-cost").textContent = `About ${calls} AI calls; ${Math.max(1, Math.round(calls * 4.5 / 60 + st.length * (n / 25)))} min.`;
+}
+$$("#b-n, .b-st, #b-nomem").forEach(el => el.addEventListener("change", benchCost)); benchCost();
+$("#b-start").onclick = e => act(e.target, async () => {
+  await api("/api/bench/start", {body: {n: +$("#b-n").value, seed: +$("#b-seed").value, strategies: $$(".b-st:checked").map(c => c.value),
+    hide_rail: $("#b-hide").checked, inject_rate: +$("#b-inject").value, no_memory: $("#b-nomem").checked, throughput: $("#b-tp").checked}});
+  selectTab("feed"); pollStatus();
+});
+$("#b-stop").onclick = e => confirmClick(e.target, "Confirm stop", () => act(e.target, async () => { await api("/api/bench/stop", {body: {}}); pollStatus(); }));
+
+/* ---------------- feed ---------------- */
+$("#srcs").innerHTML = Object.entries(SOURCES).map(([k, v]) => `<button class="srcbtn" data-src="${k}" aria-pressed="true"><i style="background:var(--src-${k})"></i>${v}</button>`).join("");
+$("#srcs").addEventListener("click", e => { const b = e.target.closest("[data-src]"); if (!b) return; srcOn[b.dataset.src] = !srcOn[b.dataset.src]; b.setAttribute("aria-pressed", srcOn[b.dataset.src]); $$(".line").forEach(l => l.style.display = srcOn[l.dataset.src] ? "" : "none"); });
+$("#feed-clear").onclick = () => { $("#feed").innerHTML = ""; };
+function linkify(text, sagaId) {
+  let h = esc(text);
+  if (sagaId) { const short = sagaId.slice(-8); h = h.replace(short, `<a data-saga="${esc(sagaId)}">${short}</a>`); if (!h.includes("data-saga")) h += ` <a data-saga="${esc(sagaId)}">open</a>`; }
+  return h;
+}
+async function pollFeed() {
+  try {
+    const items = await api(`/api/feed?after=${feedAfter}`);
+    if (!items.length) return;
+    const f = $("#feed"); if (f.querySelector(".empty")) f.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const it of items) {
+      feedAfter = it.id;
+      const d = document.createElement("div");
+      d.className = `line ${it.source} lv-${it.level}`; d.dataset.src = it.source;
+      if (!srcOn[it.source]) d.style.display = "none";
+      d.innerHTML = `<span class="t">${esc(it.at)}</span><span class="s">${SOURCES[it.source] || it.source}</span><span class="x">${linkify(it.text, it.saga_id)}</span>`;
+      frag.appendChild(d);
+    }
+    f.appendChild(frag);
+    while (f.children.length > 1500) f.firstChild.remove();
+    if ($("#follow").checked) f.scrollTop = f.scrollHeight;
+  } catch {}
+}
+document.addEventListener("click", e => { const a = e.target.closest("[data-saga]"); if (a) openTransfer(a.dataset.saga); });
+
+/* ---------------- tabs ---------------- */
+function selectTab(name) {
+  $$(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === name));
+  $$(".tabpane").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
+  if (name === "transfers") loadTransfers();
+  if (name === "logs") loadLogs();
+}
+$$(".tabs button").forEach(b => b.onclick = () => selectTab(b.dataset.tab));
+const activeTab = () => $(".tabs button[aria-selected=true]").dataset.tab;
+
+async function loadTransfers() {
+  try {
+    const st = $("#t-status").value;
+    const rows = await api(`/api/proxy/wallet/transfers?limit=100${st ? "&status=" + st : ""}`);
+    $("#t-body").innerHTML = rows.length ? rows.map(t => {
+      const acts = (t.history || []).filter(h => h.action).map(h => h.action).join(", ");
+      return `<tr class="click" data-saga="${t.id}"><td class="mono">${t.id.slice(-8)}</td><td class="num">${t.amount_paise}</td>
+        <td><span class="pill ${STATUS_TONE[t.status] || ""}">${t.status}</span></td><td>${t.current_step}</td><td>${t.policy}</td>
+        <td>${esc(acts) || "<span class='hint'>none</span>"}</td><td class="mono">${new Date(t.created_at).toLocaleTimeString()}</td></tr>`;
+    }).join("") : `<tr><td colspan="7" class="empty">No transfers${st ? " with status " + st : ""} yet.</td></tr>`;
+  } catch (e) { $("#t-body").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`; }
+}
+$("#t-status").onchange = loadTransfers;
+
+$("#l-name").innerHTML = Object.entries(SVC).map(([k, v]) => `<option value="${k}">${v} (${k})</option>`).join("");
+async function loadLogs() {
+  try { const r = await api(`/api/containers/${$("#l-name").value}/logs?tail=300`); const p = $("#l-text"); const atEnd = p.scrollTop + p.clientHeight >= p.scrollHeight - 30; p.textContent = r.text || "(no output)"; if (atEnd) p.scrollTop = p.scrollHeight; }
+  catch (e) { $("#l-text").textContent = e.message; }
+}
+$("#l-name").onchange = loadLogs; $("#l-refresh").onclick = loadLogs;
+
+/* ---------------- transfer drawer ---------------- */
+const STEPS = ["DEBIT_SENDER", "CALL_RAIL", "CREDIT_RECEIVER"];
+const STEP_NAME = {DEBIT_SENDER: "Take from sender", CALL_RAIL: "Pay through rail", CREDIT_RECEIVER: "Give to receiver"};
+async function openTransfer(id) {
+  $("#drawer").classList.add("open"); $("#drawer").setAttribute("aria-hidden", "false");
+  $("#d-id").textContent = id; $("#d-content").innerHTML = `<p class="hint">Loading…</p>`;
+  const get = p => api(p).catch(e => ({_error: e.message}));
+  const [t, ev, money, rail, truth, inv] = await Promise.all([
+    get(`/api/proxy/wallet/transfers/${id}`), get(`/api/proxy/wallet/transfers/${id}/recovery-events`),
+    get(`/api/proxy/wallet/transfers/${id}/money`), get(`/api/proxy/wallet/transfers/${id}/rail`),
+    get(`/api/proxy/rail/payments/${id}`), get(`/api/proxy/wallet/admin/invariants?saga_id=${id}`)]);
+  if (t._error) { $("#d-content").innerHTML = `<p class="hint">${esc(t._error)}</p>`; return; }
+  $("#d-title").innerHTML = `${t.amount_paise} paise <span class="pill ${STATUS_TONE[t.status] || ""}">${t.status}</span>`;
+  const hist = t.history || [];
+  const stepState = s => { const hs = hist.filter(h => h.step === s && !h.action); if (!hs.length) return ""; return hs[hs.length - 1].outcome === "ok" ? "ok" : "error"; };
+  const track = STEPS.map(s => `<div class="stp ${stepState(s)} ${t.current_step === s && t.status === "STUCK" ? "current" : ""}"><i></i>${STEP_NAME[s]}<small>${s}${hist.filter(h => h.step === s && !h.action).length > 1 ? ` · ${hist.filter(h => h.step === s && !h.action).length} tries` : ""}</small></div>`).join("");
+  const histHtml = hist.map(h => `<div><span class="when">${new Date(h.at).toLocaleTimeString()}</span><span>${h.action ? `<b>Action ${esc(h.action)}</b> by ${esc(h.actor || "?")}${h.reason ? `: ${esc(h.reason)}` : ""}` : `${esc(h.step)} try ${h.attempt || 1}: <span class="pill ${h.outcome === "ok" ? "good" : "bad"}">${esc(h.outcome)}</span>${h.error ? ` ${esc(h.error)}` : ""}`}${h.rail_ref ? ` <span class="hint mono">rail ${esc(h.rail_ref.slice(-10))}</span>` : ""}</span></div>`).join("");
+  const evs = Array.isArray(ev) ? ev : (ev.events || []);
+  const evHtml = evs.length ? evs.map(x => { const d = x.data || {}; const tone = x.type === "RecoveryRejected" ? "bad" : x.type === "RecoveryVerified" ? "good" : x.type === "RecoveryExecuted" ? (d.ok ? "good" : "bad") : "info";
+    const what = d.plan ? `${d.plan.action}${d.plan.reason ? ": " + d.plan.reason : ""}` : d.action || "";
+    return `<div><span class="when">${x.created_at ? new Date(x.created_at).toLocaleTimeString() : ""}</span><span><span class="pill ${tone}">${esc(x.type.replace("Recovery", ""))}</span> <b>${esc(SRC_NAME[d.source] || d.source || "")}</b> ${esc(what)}${d.reasons ? `<br><span style="color:var(--bad)">${esc(d.reasons.join("; "))}</span>` : ""}${d.final_status ? ` → ${esc(d.final_status)}` : ""}${d.injected ? ` <span class="pill warn">injected</span>` : ""}</span></div>`; }).join("")
+    : `<p class="hint">No recovery decisions for this transfer.</p>`;
+  const railRows = Array.isArray(rail) ? rail.map(r => `${esc(r.rail_ref.slice(-10))}: <b>${esc(r.state)}</b>`).join("<br>") : "–";
+  const invHtml = inv._error ? esc(inv._error) : inv.ok ? `<span class="pill good">clean</span>` : (inv.violations || []).map(v => `<span class="pill bad">${esc(v.kind)}</span> ${esc(v.detail)}`).join("<br>");
+  const stuck = t.status === "STUCK";
+  $("#d-content").innerHTML = `
+    <div><h4>Saga steps</h4><div class="track">${track}</div>${stuck ? `<p class="hint">Stuck at <b>${t.current_step}</b>. ${state.recovery?.strategy === "off" ? "Recovery is set to Nobody." : "The recovery service will pick it up."}</p>` : ""}</div>
+    <div class="row" style="align-items:flex-start">
+      <div><h4>Money in the ledger</h4><dl class="kv">${Object.entries(money._error ? {} : money).map(([k, v]) => `<dt>${esc(k.replace(/_/g, " "))}</dt><dd>${esc(v)}</dd>`).join("") || "<dd>–</dd>"}</dl></div>
+      <div><h4>Payment rail</h4><div style="font-size:12.5px">${railRows}<br><span class="hint">Ground truth: ${truth && !truth._error ? `<b>${esc(truth.state)}</b> (fault ${esc(truth.mode)})` : "no payment"}</span></div></div>
+    </div>
+    <div><h4>Books for this transfer</h4><div style="font-size:12.5px">${invHtml}</div></div>
+    <div><h4>Recovery decisions</h4><div class="hist">${evHtml}</div></div>
+    <div><h4>History</h4><div class="hist">${histHtml}</div></div>
+    ${stuck ? `<div><h4>Act on it yourself</h4><p class="hint">"Ask the verifier" only asks; nothing is executed. The buttons below run the action for real (no verifier), as a human operator would.</p>
+      <div class="actions-grid" id="d-actions">
+        ${["retry_step", "compensate", "reroute", "partial_refund", "escalate"].map(a => `<button class="btn" data-check="${a}">Ask the verifier: ${a}</button><button class="btn" data-do="${a}">Run ${a}</button>`).join("")}
+      </div><div id="d-verdict" style="margin-top:8px"></div></div>` : ""}`;
+  $$("#d-actions [data-check]").forEach(b => b.onclick = () => act(b, async () => {
+    const a = b.dataset.check, body = {transfer_id: id, action: a, ...(a === "partial_refund" ? {amount_paise: Math.max(1, Math.floor(t.amount_paise / 2))} : {}), ...(a === "reroute" ? {rail: "backup"} : {})};
+    const r = await api("/api/proxy/recovery/admin/verify", {body});
+    $("#d-verdict").innerHTML = `<div class="verdict ${r.allowed ? "good" : "bad"}"><b>${esc(a)}: ${r.allowed ? "allowed" : "blocked"}</b>${r.reasons?.length ? "<br>" + r.reasons.map(esc).join("<br>") : ""}</div>`;
+  }));
+  $$("#d-actions [data-do]").forEach(b => b.onclick = () => confirmClick(b, `Confirm ${b.dataset.do}`, () => act(b, async () => {
+    const a = b.dataset.do, body = {action: a, actor: "console", reason: "manual action from the console", ...(a === "partial_refund" ? {amount_paise: Math.max(1, Math.floor(t.amount_paise / 2))} : {}), ...(a === "reroute" ? {rail: "backup"} : {})};
+    await api(`/api/proxy/wallet/transfers/${id}/actions`, {body}); toast(`${a} executed`); openTransfer(id);
+  })));
+}
+$("#d-close").onclick = () => { $("#drawer").classList.remove("open"); $("#drawer").setAttribute("aria-hidden", "true"); };
+document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#d-close").click(); $("#lightbox").style.display = "none"; } });
+
+/* ---------------- results ---------------- */
+function table(rows, cols, numCols = []) {
+  if (!rows?.length) return `<p class="hint">No data yet.</p>`;
+  return `<div style="overflow:auto"><table><thead><tr>${cols.map(([k, l]) => `<th class="${numCols.includes(k) ? "num" : ""}">${l}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(([k]) => `<td class="${numCols.includes(k) ? "num" : ""}">${esc(k === "strategy" ? (SHORT[r[k]] || r[k]) : r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+async function loadResults() {
+  try {
+    const r = await api("/api/results");
+    if (!r.available) { $("#res-main").innerHTML = `<p class="hint">No benchmark results yet. Start a benchmark on the left.</p>`; return; }
+    $("#res-meta").textContent = r.invalid ? `${r.invalid} invalid run(s) skipped` : "";
+    $("#res-main").innerHTML = `<h4 style="margin:4px 0 0;font-size:12.5px">Main results <span class="hint">(mean ± std over seeds, 100 failures each)</span></h4>` +
+      table(r.main, [["strategy", "Strategy"], ["seeds", "Seeds"], ["resolved_%", "Resolved %"], ["unsafe_%", "Unsafe %"], ["ai_calls_per_failure", "AI calls / failure"], ["median_time_to_resolve_s", "Median fix (s)"]], ["seeds"]);
+    $("#res-abl").innerHTML = table(r.ablation, [["variant", "Run"], ["strategy", "Strategy"], ["resolved", "Res."], ["unsafe", "Unsafe"], ["ai_calls", "AI calls"], ["injected", "Injected"], ["injected_executed", "Inj. executed"], ["verifier_rejections", "Rejected"]], ["resolved", "unsafe", "ai_calls", "injected", "injected_executed", "verifier_rejections"]);
+    $("#res-fault").innerHTML = table(r.by_fault, [["strategy", "Strategy"], ["timeout", "Timeout"], ["reject", "Reject"], ["duplicate", "Dup."], ["partial", "Partial"], ["unknown", "Unknown"]]);
+    $("#res-tp").innerHTML = table(r.throughput, [["recovery_service", "Recovery"], ["achieved_tps", "Transfers/s"], ["p50_ms", "p50 ms"], ["p95_ms", "p95 ms"], ["errors", "Errors"]], ["errors"]);
+    $("#res-figs").innerHTML = r.figures.length ? r.figures.map(f => `<img class="fig" src="/api/results/figure/${encodeURIComponent(f)}?t=${Date.now()}" alt="${esc(f)}">`).join("") : `<p class="hint">No figures yet. Press "Rebuild tables &amp; figures".</p>`;
+    $("#res-recent").innerHTML = table(r.recent.map(x => ({...x, valid: x.valid === "0" ? "invalid" : "ok", when: (x.finished_at || "").slice(5, 16).replace("T", " ")})),
+      [["when", "Finished (UTC)"], ["seed", "Seed"], ["strategy", "Strategy"], ["variant", "Run"], ["n", "n"], ["resolved", "Res."], ["unsafe", "Unsafe"], ["valid", ""]], ["n", "resolved", "unsafe"]);
+  } catch (e) { $("#res-main").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+}
+$("#res-refresh").onclick = loadResults;
+$("#res-agg").onclick = e => act(e.target, async () => { const r = await api("/api/results/aggregate", {body: {}}); toast(r.ok ? "Tables and figures rebuilt" : "aggregate.py failed: see feed", 4000); loadResults(); });
+$("#res-figs").addEventListener("click", e => { if (e.target.tagName === "IMG") { $("#lightbox img").src = e.target.src; $("#lightbox").style.display = "flex"; } });
+$("#lightbox").onclick = () => $("#lightbox").style.display = "none";
+
+async function loadMemory() {
+  try {
+    const m = await api("/api/proxy/recovery/admin/memory"), entries = Object.entries(m);
+    $("#mem-count").textContent = `${entries.length} fix${entries.length === 1 ? "" : "es"} remembered`;
+    $("#mem").innerHTML = entries.length ? entries.map(([k, v]) => `<div><b>${esc(v.action)}</b> <span class="pill">${esc(v.hits || 0)} reuse${v.hits == 1 ? "" : "s"}</span><br><code>${esc(k)}</code></div>`).join("")
+      : `<p class="hint">Empty. With "AI + verifier + memory", every AI fix that worked and left the books clean is remembered here.</p>`;
+  } catch (e) { $("#mem").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+}
+
+/* ---------------- loops ---------------- */
+pollStatus(); pollFeed(); loadResults(); loadMemory();
+setInterval(pollStatus, 3000);
+setInterval(pollFeed, 1500);
+setInterval(loadMemory, 6000);
+setInterval(() => { if (activeTab() === "transfers") loadTransfers(); if (activeTab() === "logs" && $("#l-auto").checked) loadLogs(); }, 3000);
+setInterval(loadResults, 30000);
+</script>
+</body>
+</html>

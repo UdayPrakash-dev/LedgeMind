@@ -114,6 +114,30 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------
+  # Demo console (web page): http://localhost:8090  (this computer only)
+  # ---------------------------------------------------------------
+  console:
+    build: ./console
+    container_name: ledgemind-console
+    environment:
+      WALLET_URL: http://wallet-service:8080
+      RAIL_URL: http://fake-rail:9000
+      RECOVERY_URL: http://recovery-service:8000
+      BENCH_DIR: /bench
+      DECISIONS_PATH: /bench/results/decisions.jsonl
+    volumes:
+      - ./bench:/bench                                 # run the benchmark, read results and figures
+      - /var/run/docker.sock:/var/run/docker.sock      # restart containers and read their logs
+    ports:
+      - "127.0.0.1:8090:8090"                          # never exposed to the network: it can restart containers
+    depends_on:
+      wallet-service:
+        condition: service_started
+      recovery-service:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------
   # Benchmark (only runs on demand: bench.bat / make bench)
   # ---------------------------------------------------------------
   bench:

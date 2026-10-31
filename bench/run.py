@@ -542,6 +542,8 @@ def main() -> None:
                 raise SystemExit(f"unknown strategy {strategy}")
             rows, summary = run_strategy(strategy, failures, args.seed, args)
             suffix = "" if args.variant == "main" else "_" + args.variant.replace("+", "_")
+            if args.n != 100:
+                suffix += f"_n{args.n}"  # smoke runs never overwrite the 100-failure files the paper uses
             write_csv(os.path.join(args.out, f"run_{args.seed}_{strategy}{suffix}.csv"), rows)
             write_csv(os.path.join(args.out, "summary.csv"), [summary], append=True)
             write_csv(os.path.join(args.out, "summary_by_fault.csv"), by_fault(rows), append=True)

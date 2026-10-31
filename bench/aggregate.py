@@ -68,6 +68,15 @@ def run_file(results, seed, strategy, variant):
     return os.path.join(results, f"run_{seed}_{strategy}{suffix}.csv")
 
 
+def run_rows(results, seed, strategy, variant, n=100):
+    """Rows of one run file, or [] if it is missing or was overwritten by a run of another size."""
+    path = run_file(results, seed, strategy, variant)
+    if not os.path.exists(path):
+        return []
+    rows = read_csv(path)
+    return rows if len(rows) == n else []
+
+
 def outcome(row):
     if row["resolved"] == "1":
         return "Resolved"
@@ -121,10 +130,11 @@ def table_by_fault(results, runs):
         counts = defaultdict(lambda: defaultdict(int))
         seeds = 0
         for (seed, s, v), _ in sorted(runs.items()):
-            if s != st or v != "main" or not os.path.exists(run_file(results, seed, s, v)):
+            rows = run_rows(results, seed, s, v) if s == st and v == "main" else []
+            if not rows:
                 continue
             seeds += 1
-            for row in read_csv(run_file(results, seed, s, v)):
+            for row in rows:
                 c = counts[row["fault"]]
                 c["n"] += 1
                 c["resolved"] += row["resolved"] == "1"
@@ -225,8 +235,8 @@ def fig_outcomes(results, runs, out, plt):
     for st in STRATEGY_ORDER:
         counts, total = defaultdict(int), 0
         for (seed, s, v), _ in runs.items():
-            if s == st and v == "main" and os.path.exists(run_file(results, seed, s, v)):
-                for row in read_csv(run_file(results, seed, s, v)):
+            if s == st and v == "main":
+                for row in run_rows(results, seed, s, v):
                     counts[outcome(row)] += 1
                     total += 1
         if total:

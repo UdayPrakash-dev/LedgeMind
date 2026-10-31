@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LedgeMind</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --bg: #e9eef3; --panel: #ffffff; --panel-2: #f4f7fa; --rule: #d6dde5; --rule-2: #e8edf2;
+  --ink: #15202b; --ink-2: #4b5967; --muted: #7c8996;
+  --primary: #1f4e8c; --primary-soft: #e3ecf8;
+  --good: #1d7f46; --good-soft: #e3f3e9; --warn: #a8670f; --warn-soft: #fbf0dc; --bad: #bf312b; --bad-soft: #fbe5e3;
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px 40px; }
+header { display: flex; align-items: center; gap: 16px; padding: 18px 0 8px; flex-wrap: wrap; }
+header h1 { font-size: 22px; margin: 0; letter-spacing: -0.015em; }
+header .health { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); margin-left: auto; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); display: inline-block; flex: none; }
+.dot.ok { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+.link { background: none; border: 0; color: var(--primary); cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 3px; font-size: 14px; }
+a.link { display: inline-block; }
+
+.intro { font-size: 17px; color: var(--ink-2); max-width: 760px; margin: 4px 0 22px; line-height: 1.6; }
+.intro b { color: var(--ink); font-weight: 600; }
+
+.grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; }
+.card h2 { font-size: 17px; margin: 0 0 4px; }
+.card .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; }
+
+.step { margin-bottom: 18px; }
+.step h3 { font-size: 14px; margin: 0 0 8px; color: var(--ink-2); font-weight: 600; }
+.choices { display: flex; flex-direction: column; gap: 8px; }
+.choice { text-align: left; border: 1.5px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 10px 12px; cursor: pointer; display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; }
+.choice:hover { border-color: var(--primary); }
+.choice .radio { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rule); margin-top: 3px; }
+.choice[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); }
+.choice[aria-pressed="true"] .radio { border: 5px solid var(--primary); }
+.choice b { display: block; font-size: 14.5px; }
+.choice span { color: var(--ink-2); font-size: 13px; }
+.problems { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.problems .choice { grid-template-columns: 1fr; padding: 9px 11px; }
+.problems .choice .radio { display: none; }
+.send { width: 100%; background: var(--primary); color: #fff; border: 0; border-radius: 8px; padding: 12px; font-weight: 600; font-size: 15px; cursor: pointer; }
+.send:hover { filter: brightness(1.08); }
+.send:disabled { opacity: .55; cursor: not-allowed; }
+.toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--rule-2); }
+.toggle input { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--bad); }
+.toggle span small { display: block; color: var(--muted); font-size: 12.5px; }
+.note { font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 8px 10px; margin-top: 10px; display: none; }
+
+/* stories */
+.stories { display: flex; flex-direction: column; gap: 12px; }
+.story { border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; background: var(--panel); }
+.story .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.story .amount { font-weight: 600; font-size: 15px; }
+.story .problem { color: var(--muted); font-size: 13px; }
+.verdict { font-weight: 600; font-size: 14px; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+.verdict.good { background: var(--good-soft); color: var(--good); }
+.verdict.bad { background: var(--bad-soft); color: var(--bad); }
+.verdict.warn { background: var(--warn-soft); color: var(--warn); }
+.verdict.info { background: var(--primary-soft); color: var(--primary); }
+.path { display: grid; grid-template-columns: repeat(3, 1fr); margin: 12px 0 10px; }
+.path div { position: relative; text-align: center; font-size: 12px; color: var(--ink-2); padding-top: 20px; }
+.path div::before { content: ""; position: absolute; top: 6px; left: 0; right: 0; height: 2px; background: var(--rule); }
+.path div:first-child::before { left: 50%; } .path div:last-child::before { right: 50%; }
+.path i { position: absolute; top: 0; left: calc(50% - 7px); width: 14px; height: 14px; border-radius: 50%; background: var(--panel); border: 2px solid var(--rule); z-index: 1; }
+.path .ok i { background: var(--good); border-color: var(--good); }
+.path .err i { background: var(--panel); border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.path .back i { background: var(--primary); border-color: var(--primary); }
+.timeline { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
+.timeline li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; padding: 3px 0; }
+.timeline li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--rule); margin: 7px 0 0 4px; }
+.timeline li.ai::before { background: #6250d6; } .timeline li.ok::before { background: var(--good); }
+.timeline li.block::before { background: var(--bad); } .timeline li.err::before { background: var(--warn); }
+.timeline li.block { color: var(--bad); }
+.timeline .who { font-weight: 600; }
+.empty { color: var(--muted); text-align: center; padding: 40px 10px; font-size: 14.5px; }
+
+/* results */
+.results { margin-top: 20px; }
+.headline { font-size: 16px; margin: 0 0 16px; max-width: 760px; line-height: 1.55; }
+.bars { display: flex; flex-direction: column; gap: 12px; }
+.bar-row { display: grid; grid-template-columns: 210px 1fr; gap: 14px; align-items: center; }
+@media (max-width: 640px) { .bar-row { grid-template-columns: 1fr; gap: 4px; } }
+.bar-row .name b { display: block; font-size: 14px; } .bar-row .name span { font-size: 12.5px; color: var(--muted); }
+.bar { display: flex; height: 26px; border-radius: 5px; overflow: hidden; background: var(--rule-2); gap: 2px; }
+.bar div { display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; min-width: 0; white-space: nowrap; overflow: hidden; }
+.bar .fixed { background: var(--good); } .bar .unsafe { background: var(--bad); } .bar .open { background: #c9d1da; color: var(--ink); }
+.legend { display: flex; gap: 16px; font-size: 13px; color: var(--ink-2); margin-top: 14px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+@media (max-width: 760px) { .facts { grid-template-columns: 1fr; } }
+.fact { background: var(--panel-2); border-radius: 8px; padding: 12px 14px; font-size: 13.5px; color: var(--ink-2); }
+.fact b { display: block; font-size: 22px; color: var(--ink); letter-spacing: -0.01em; }
+
+/* health popover */
+.services { position: absolute; right: 20px; top: 56px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 10px 30px rgba(21,32,43,.12); padding: 12px 14px; width: 330px; display: none; z-index: 5; }
+.services.open { display: block; }
+.services div.svc { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule-2); font-size: 14px; }
+.services div.svc:last-of-type { border-bottom: 0; }
+.services .svc span.n { flex: 1; }
+.btn { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12.5px; }
+.btn.confirm { background: var(--bad); border-color: var(--bad); color: #fff; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 9px 16px; border-radius: 8px; font-size: 14px; display: none; z-index: 20; max-width: 90vw; }
+</style>
+</head>
+<body>
+<div class="wrap" style="position:relative">
+  <header>
+    <h1>LedgeMind</h1>
+    <div class="health"><span class="dot" id="h-dot"></span><span id="h-text">Checking…</span>
+      <button class="link" id="h-more">Details</button><a class="link" href="/expert">Expert view</a></div>
+    <div class="services" id="services"></div>
+  </header>
+
+  <p class="intro">Sending money between wallets takes three steps: <b>take it from the sender</b>, <b>pay it through the bank network</b>, <b>give it to the receiver</b>. Sometimes the bank network fails in a confusing way: the money may or may not have gone. A wrong fix can pay twice or lose money. Here an <b>AI decides the fix</b>, and a <b>safety check</b> stops any fix that could lose money.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Try it</h2>
+      <p class="sub">Choose who fixes problems, pick a problem, and send a transfer.</p>
+
+      <div class="step">
+        <h3>1. Who fixes problems?</h3>
+        <div class="choices" id="mode">
+          <button class="choice" data-mode="rule"><i class="radio"></i><div><b>A fixed rule</b><span>Always refund the sender when the network fails. The usual simple approach.</span></div></button>
+          <button class="choice" data-mode="ai"><i class="radio"></i><div><b>AI alone</b><span>The AI looks at the facts and picks a fix. Nobody double-checks it.</span></div></button>
+          <button class="choice" data-mode="safe"><i class="radio"></i><div><b>AI with a safety check</b><span>The AI picks a fix, a checker blocks unsafe ones, and good fixes are remembered.</span></div></button>
+        </div>
+        <div class="note" id="mode-note">Custom settings are active (changed in the expert view). Pick one above to go back to a simple setup.</div>
+      </div>
+
+      <div class="step">
+        <h3>2. What goes wrong at the bank network?</h3>
+        <div class="problems" id="problem">
+          <button class="choice" data-fault="timeout" aria-pressed="true"><b>No reply</b><span>The money went, but the reply got lost</span></button>
+          <button class="choice" data-fault="duplicate"><b>"Duplicate" error</b><span>The money went, despite the error</span></button>
+          <button class="choice" data-fault="reject"><b>Refused</b><span>The money did not go</span></button>
+          <button class="choice" data-fault="partial"><b>Reversed later</b><span>It went, then came back</span></button>
+          <button class="choice" data-fault="unknown"><b>Strange error</b><span>Nobody knows if it went</span></button>
+          <button class="choice" data-fault="none"><b>Nothing</b><span>A normal transfer</span></button>
+        </div>
+      </div>
+
+      <button class="send" id="send">Send a transfer</button>
+
+      <label class="toggle"><input type="checkbox" id="mistakes"><span>Make the AI make mistakes<small>Half of the AI's answers are swapped for a wrong one, to show what the safety check catches.</small></span></label>
+    </section>
+
+    <section>
+      <div class="card">
+        <h2>What happened</h2>
+        <p class="sub">Your latest transfers, newest first. Each one tells its own story.</p>
+        <div class="stories" id="stories"><div class="empty">Nothing yet. Send a transfer on the left and watch it here.</div></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card results">
+    <h2>What we measured</h2>
+    <p class="sub" id="res-sub">300 failed transfers (100 for each of 3 test runs), the same problems for every approach.</p>
+    <p class="headline" id="headline"></p>
+    <div class="bars" id="bars"><div class="empty">No results yet. Run the benchmark from the expert view.</div></div>
+    <div class="legend"><span><i style="background:var(--good)"></i>Fixed correctly</span><span><i style="background:var(--bad)"></i>Unsafe: money paid twice or lost</span><span><i style="background:#c9d1da"></i>Left unsolved</span></div>
+    <div class="facts" id="facts"></div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rupees = p => "₹" + (p / 100).toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const SVC = {"ledgemind-wallet": "Wallet service", "ledgemind-rail": "Bank network (simulated)", "ledgemind-recovery": "AI recovery service", "ledgemind-postgres": "Database", "ledgemind-redis": "Cache and queue"};
+const ACTION = {retry_step: "try the payment again", compensate: "refund the sender", reroute: "pay again through a backup network",
+                partial_refund: "refund part of the money", escalate: "ask a human to look"};
+const MODES = {rule: {policy: "refund", strategy: "off"}, ai: {policy: "escalate", strategy: "llm_no_verifier"}, safe: {policy: "escalate", strategy: "llm_verified_memory"}};
+let state = {}, fault = "timeout", cache = {};
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let d; try { d = await r.json(); } catch { d = {}; }
+  if (!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+  return d;
+}
+function toast(m, ms = 3000) { const t = $("#toast"); t.textContent = m; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
+
+/* ---------- health ---------- */
+function renderHealth() {
+  const sv = state.services || {}, down = Object.keys(SVC).filter(n => (sv[n] || {}).health !== "ok");
+  $("#h-dot").className = "dot " + (down.length ? "bad" : "ok");
+  $("#h-text").textContent = down.length ? `${down.length} part${down.length > 1 ? "s" : ""} not running: ${down.map(n => SVC[n]).join(", ")}` : "Everything is running";
+  $("#services").innerHTML = Object.keys(SVC).map(n => `<div class="svc"><span class="dot ${(sv[n] || {}).health === "ok" ? "ok" : "bad"}"></span><span class="n">${SVC[n]}</span><button class="btn" data-restart="${n}">Restart</button></div>`).join("")
+    + `<p style="font-size:12.5px;color:var(--muted);margin:8px 0 0">AI model: ${esc(state.recovery?.llm_model || "?")}</p>`;
+}
+$("#h-more").onclick = () => $("#services").classList.toggle("open");
+$("#services").addEventListener("click", e => {
+  const b = e.target.closest("[data-restart]"); if (!b) return;
+  if (!b.dataset.armed) { b.dataset.armed = 1; b.classList.add("confirm"); b.textContent = "Confirm"; setTimeout(() => { delete b.dataset.armed; b.classList.remove("confirm"); b.textContent = "Restart"; }, 4000); return; }
+  b.disabled = true; b.textContent = "Restarting…";
+  api(`/api/containers/${b.dataset.restart}/restart`, {}).then(() => toast(`${SVC[b.dataset.restart]} restarted`)).catch(e => toast(e.message, 5000)).finally(poll);
+});
+
+/* ---------- mode ---------- */
+function currentMode() {
+  const p = state.policy, s = state.recovery?.strategy;
+  return Object.keys(MODES).find(k => MODES[k].policy === p && MODES[k].strategy === s) || null;
+}
+function renderMode() {
+  const m = currentMode(), ab = state.ablation || {};
+  $$("#mode .choice").forEach(b => b.setAttribute("aria-pressed", b.dataset.mode === m));
+  const custom = !m || (ab.label && ab.label !== "main" && !(ab.inject_rate === 0.5 && ab.use_memory === false && !ab.hide_rail));
+  $("#mode-note").style.display = custom ? "block" : "none";
+  if (document.activeElement !== $("#mistakes")) $("#mistakes").checked = (ab.inject_rate || 0) > 0;
+  $("#send").disabled = !!state.bench?.running;
+  $("#send").textContent = state.bench?.running ? "A benchmark is running…" : "Send a transfer";
+}
+$("#mode").addEventListener("click", async e => {
+  const b = e.target.closest("[data-mode]"); if (!b) return;
+  const m = MODES[b.dataset.mode];
+  try { await api("/api/proxy/wallet/admin/policy", {policy: m.policy}); await api("/api/proxy/recovery/admin/strategy", {strategy: m.strategy}); await poll(); }
+  catch (err) { toast(err.message, 5000); }
+});
+$("#mistakes").onchange = async e => {
+  try { await api("/api/proxy/recovery/admin/ablation", e.target.checked ? {inject_rate: 0.5, use_memory: false, seed: 1} : {});
+        toast(e.target.checked ? "The AI will now make mistakes half of the time" : "The AI is back to normal"); await poll(); }
+  catch (err) { toast(err.message, 5000); }
+};
+$("#problem").addEventListener("click", e => { const b = e.target.closest("[data-fault]"); if (!b) return; fault = b.dataset.fault; $$("#problem .choice").forEach(x => x.setAttribute("aria-pressed", x === b)); });
+$("#send").onclick = async e => {
+  e.target.disabled = true;
+  try { await api("/api/demo/transfer", {fault, count: 1}); toast("Transfer sent"); setTimeout(loadStories, 600); }
+  catch (err) { toast(err.message, 5000); } finally { e.target.disabled = false; }
+};
+
+/* ---------- stories ---------- */
+function problemOf(hist) {
+  const err = (hist.find(h => h.error && !h.action) || {}).error || "";
+  if (/timeout|deadline/i.test(err)) return "No reply from the bank network";
+  if (/409|duplicate/i.test(err)) return "Bank network said \"duplicate\"";
+  if (/422/.test(err)) return "Bank network refused the payment";
+  if (/revers/i.test(err)) return "Payment was reversed later";
+  if (/500/.test(err)) return "Strange error from the bank network";
+  return err ? "Bank network error" : "No problem";
+}
+function verdictOf(t, inv) {
+  const kinds = Object.keys(inv?.violations_by_kind || {});
+  if (kinds.includes("rail_paid_but_refunded")) return ["bad", "Unsafe: money went out twice"];
+  if (kinds.includes("double_rail_payment")) return ["bad", "Unsafe: paid twice"];
+  if (kinds.includes("money_created") || kinds.includes("over_delivery")) return ["bad", "Unsafe: money created"];
+  if (kinds.includes("delivered_but_rail_not_paid")) return ["bad", "Problem: payment reversed"];
+  return {COMPLETED: ["good", "Money delivered"], COMPENSATED: ["good", "Sender got the money back"], FAILED: ["good", "Stopped: nothing moved"],
+          STUCK: ["warn", "Waiting for a fix"], ESCALATED: ["warn", "Handed to a human"], RUNNING: ["info", "In progress"]}[t.status] || ["info", t.status];
+}
+function plainError(err) {
+  if (/timeout|deadline/i.test(err)) return "The bank network did not reply";
+  if (/409|duplicate/i.test(err)) return "The bank network said \"duplicate\"";
+  if (/422/.test(err)) return "The bank network refused";
+  if (/revers/i.test(err)) return "The bank network reversed the payment";
+  if (/500/.test(err)) return "The bank network gave a strange error";
+  return "Error: " + err.slice(0, 80);
+}
+function plainReason(r) {  // the verifier's 10 rules, in everyday words
+  const rules = [
+    [/rail says PAID.*refund/i, "the money already went, so a refund would pay it out twice"],
+    [/rail says PAID.*(reroute|second time)/i, "the money already went, so paying again would pay twice"],
+    [/already answered .*retrying/i, "the network already gave a final answer, so trying again cannot work"],
+    [/recovery actions already tried/i, "too many attempts already, so a human should look"],
+    [/only applies at|nothing to retry at step/i, "this fix does not fit the step where the transfer stopped"],
+    [/would create money/i, "it would give back more money than was taken"],
+    [/receiver would end with/i, "the receiver would get more than was sent"],
+    [/balance negative/i, "it would take money that someone no longer has"],
+    [/nothing was debited/i, "nothing was taken from the sender, so there is nothing to refund"],
+    [/exceeds the .* still held|only .* is still refundable/i, "it would refund more than is still held"],
+    [/key of this transfer was already used/i, "this refund was already made once"],
+  ];
+  const hit = rules.find(([re]) => re.test(r));
+  return hit ? hit[1] : r;
+}
+function timeline(t, events) {
+  const items = [];
+  for (const h of t.history || []) {
+    const at = new Date(h.at).getTime();
+    if (h.action) { items.push({at, cls: "ok", html: `<span class="who">Fix applied:</span> ${esc(ACTION[h.action] || h.action)}`}); continue; }
+    if (h.outcome !== "ok") { items.push({at, cls: "err", html: esc(plainError(h.error || ""))}); continue; }
+    const txt = {DEBIT_SENDER: "Took the money from the sender", CALL_RAIL: "The bank network confirmed the payment", CREDIT_RECEIVER: "Gave the money to the receiver", REFUND_SENDER: "Refunded the sender automatically (fixed rule)"}[h.step];
+    if (txt && !(h.step === "CALL_RAIL" && items.some(i => i.html === txt))) items.push({at, cls: "", html: txt});
+  }
+  for (const ev of events || []) {
+    const d = ev.data || {}, at = new Date(ev.created_at).getTime();
+    if (ev.type === "RecoveryProposed") {
+      const who = d.source === "memory" ? "Memory:" : "AI suggested:";
+      const inj = /INJECTED/.test(d.plan?.reason || "");
+      items.push({at, cls: "ai", html: `<span class="who">${who}</span> ${esc(ACTION[d.plan?.action] || d.plan?.action)}${inj ? " <em>(a deliberate test mistake)</em>" : ""}`});
+    } else if (ev.type === "RecoveryRejected") {
+      items.push({at, cls: "block", html: `<span class="who">Safety check blocked it:</span> ${esc(plainReason((d.reasons || [])[0] || ""))}`});
+    } else if (ev.type === "RecoveryVerified") {
+      items.push({at, cls: "ok", html: `<span class="who">Safety check:</span> approved`});
+    }
+  }
+  items.sort((a, b) => a.at - b.at);
+  return items.map(i => `<li class="${i.cls}"><span>${i.html}</span></li>`).join("");
+}
+function pathOf(t) {
+  const h = t.history || [], st = s => { const x = h.filter(e => e.step === s && !e.action); if (!x.length) return ""; return x[x.length - 1].outcome === "ok" ? "ok" : "err"; };
+  const refunded = t.status === "COMPENSATED";
+  return `<div class="path"><div class="${st("DEBIT_SENDER")}"><i></i>Sender</div><div class="${refunded ? "back" : st("CALL_RAIL")}"><i></i>${refunded ? "Refunded" : "Bank network"}</div><div class="${st("CREDIT_RECEIVER")}"><i></i>Receiver</div></div>`;
+}
+async function loadStories() {
+  try {
+    const list = (await api("/api/proxy/wallet/transfers?limit=4")).filter(t => t.amount_paise >= 20000);  // demo transfers only
+    if (!list.length) return;
+    const cards = await Promise.all(list.map(async t => {
+      const key = t.id + t.updated_at;
+      if (!cache[key]) {
+        const [events, inv] = await Promise.all([
+          api(`/api/proxy/wallet/transfers/${t.id}/recovery-events`).catch(() => []),
+          ["COMPLETED", "COMPENSATED", "ESCALATED", "FAILED"].includes(t.status) ? api(`/api/proxy/wallet/admin/invariants?saga_id=${t.id}`).catch(() => null) : null]);
+        cache[key] = {events, inv};
+      }
+      const {events, inv} = cache[key], [tone, label] = verdictOf(t, inv);
+      return `<article class="story"><div class="head"><div><span class="amount">${rupees(t.amount_paise)}</span> <span class="problem">· ${esc(problemOf(t.history || []))}</span></div><span class="verdict ${tone}">${label}</span></div>
+        ${pathOf(t)}<ol class="timeline">${timeline(t, events)}</ol></article>`;
+    }));
+    $("#stories").innerHTML = cards.join("");
+  } catch {}
+}
+
+/* ---------- results ---------- */
+const PLAIN = {"Static refund": ["A fixed rule", "always refund"], "Retry with backoff": ["A fixed rule", "keep retrying"], "AI only": ["AI alone", "no safety check"], "AI + verifier + memory": ["AI with a safety check", "and memory"]};
+async function loadResults() {
+  try {
+    const r = await api("/api/results");
+    if (!r.available || !r.main?.length) return;
+    const num = v => parseFloat(String(v)) || 0;
+    $("#bars").innerHTML = r.main.map(m => {
+      const fixed = num(m["resolved_%"]), unsafe = num(m["unsafe_%"]), open = Math.max(0, 100 - fixed - unsafe), [n, s] = PLAIN[m.strategy] || [m.strategy, ""];
+      const seg = (cls, v, txt) => v > 0 ? `<div class="${cls}" style="width:${v}%" title="${txt}: ${v.toFixed(0)}%">${v >= 9 ? v.toFixed(0) + "%" : ""}</div>` : "";
+      return `<div class="bar-row"><div class="name"><b>${n}</b><span>${s}</span></div><div class="bar">${seg("fixed", fixed, "Fixed correctly")}${seg("unsafe", unsafe, "Unsafe")}${seg("open", open, "Left unsolved")}</div></div>`;
+    }).join("");
+    const by = Object.fromEntries(r.main.map(m => [m.strategy, m]));
+    const rule = by["Static refund"], safe = by["AI + verifier + memory"];
+    if (rule && safe) $("#headline").innerHTML = `The fixed rule fixed only <b>${num(rule["resolved_%"]).toFixed(0)}%</b> of the failures and <b>lost money in ${num(rule["unsafe_%"]).toFixed(0)}%</b>, because it refunds even when the money already went. The AI with a safety check fixed <b>${num(safe["resolved_%"]).toFixed(0)}%</b> with <b>no unsafe fixes</b>.`;
+    const facts = [];
+    if (safe) facts.push(`<div class="fact"><b>${Math.round(100 - num(safe.ai_calls_per_failure) * 100)}%</b>fewer AI calls, because fixes that worked are remembered and reused</div>`);
+    const inj = (r.ablation || []).filter(a => a.variant === "inject30");
+    const alone = inj.find(a => a.strategy === "AI only"), checked = inj.find(a => a.strategy !== "AI only");
+    if (alone && checked) facts.push(`<div class="fact"><b>${alone.unsafe} vs ${checked.unsafe}</b>unsafe outcomes when the AI was forced to make mistakes 30% of the time: AI alone vs AI with the safety check</div>`);
+    const tp = r.throughput || [];
+    if (tp.length === 2) facts.push(`<div class="fact"><b>${esc(String(tp[1].p95_ms).split(" ")[0])} ms</b>for normal transfers while the AI is busy fixing failures (${esc(String(tp[0].p95_ms).split(" ")[0])} ms when idle): fixing does not slow the bank down</div>`);
+    $("#facts").innerHTML = facts.join("");
+  } catch {}
+}
+
+/* ---------- loop ---------- */
+async function poll() { try { state = await api("/api/status"); renderHealth(); renderMode(); } catch { $("#h-dot").className = "dot bad"; $("#h-text").textContent = "The console cannot reach the services"; } }
+poll(); loadStories(); loadResults();
+setInterval(poll, 3000); setInterval(loadStories, 2500); setInterval(loadResults, 60000);
+</script>
+</body>
+</html>

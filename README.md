@@ -5,7 +5,7 @@ An event-sourced wallet ledger whose stuck transfers (sagas) are repaired by an 
 ## Layout
 
 ```
-docker-compose.yml     runs Postgres, Redis, wallet-service, recovery-service
+docker-compose.yml     runs Postgres, Redis, wallet-service, fake-rail, recovery-service, console
 wallet-service/        Go: event store, wallets, snapshots, transfer sagas
   migrations/          SQL tables, applied automatically on every start
   eventstore/          append-only event store with optimistic concurrency
@@ -26,10 +26,26 @@ recovery-service/      Python: reads stuck-sagas, asks the AI for one action, ap
   ablation.py          experiment switches: hide the rail from the AI, inject wrong plans, memory off
   decisions.py         one JSON line per decision -> bench/results/decisions.jsonl
 fake-rail/             Go: fake payment rail with 5 repeatable fault modes
+console/               Python + one HTML page: the demo console (http://localhost:8090)
 bench/                 benchmark harness: run.py (stdlib only), results/ (CSV output, not in Git)
 bench.bat / Makefile   one command for the whole experiment
 paper/                 LaTeX source
 ```
+
+## Demo console (port 8090)
+
+`docker compose up -d --build` also starts the console: open **http://localhost:8090**. The main page is a simple, plain-language demo (pick who fixes problems, pick a problem, send a transfer, read what happened, see the measured results); **Expert view** (`/expert`) has every control below. It is bound to this
+computer only (it can restart containers through the Docker socket), so it is never reachable from the network.
+
+| Area | What you can do |
+| --- | --- |
+| Top bar | health of wallet, rail, recovery, Postgres, Redis; restart any of them; open its logs |
+| Left | wallet policy (refund / retry / hand to recovery), recovery strategy (nobody / AI only / AI + verifier + memory), experiment switches (hide rail, injected wrong answers, memory on/off, seed), send transfers that fail in a chosen way, reconcile, recover all stuck, check the books, clear AI memory, reset the rail, start / stop a benchmark |
+| Centre | live feed (bank, AI decisions with the verifier's verdict, benchmark output, your actions), counters, transfers table, container logs |
+| Click a transfer | saga steps, money in the ledger, rail ground truth, invariants, every recovery event; ask the verifier about an action (dry run) or run one yourself |
+| Right | results from `bench/results` (main table, experiments, per fault, speed, figures, recent runs incl. invalid ones), rebuild tables and figures, AI memory contents |
+
+A benchmark resets the rail and sets the policy back to Refund when it ends; choose "Hand to recovery" again for a live demo.
 
 ## Run locally (Windows cmd)
 
